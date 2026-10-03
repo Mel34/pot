@@ -38,8 +38,7 @@ fn main() {
 
     let work_dir = cache_dir.join("work").join(&package);
 
-    std::fs::create_dir_all(cache_dir.join("work"))
-    .expect("failed to create POT work directory");
+    std::fs::create_dir_all(cache_dir.join("work")).expect("failed to create POT work directory");
 
     println!("Repository: {repository}");
     println!("Package:    {selected_package}");
@@ -59,6 +58,38 @@ fn main() {
         .current_dir(cache_dir.join("work"))
         .status()
         .expect("failed to run pkgctl");
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    
+    let status = std::process::Command::new("makepkg")
+        .args(["-so"])
+        .current_dir(&work_dir)
+        .status()
+        .expect("failed to run makepkg");
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    let status = std::process::Command::new("git")
+        .args([
+            "apply",
+            "-p3",
+            "/home/anon/Projects/nautilus-touchpad-swipe.patch",
+        ])
+        .current_dir(work_dir.join("src").join("nautilus"))
+        .status()
+        .expect("failed to apply overlay patch");
+
+    println!("Overlay applied.");
+
+    let status = std::process::Command::new("makepkg")
+        .args(["-e"])
+        .current_dir(&work_dir)
+        .status()
+        .expect("failed to run makepkg");
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
