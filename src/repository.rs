@@ -68,12 +68,12 @@ pub fn repository_dir(repository: &str) -> PathBuf {
     PathBuf::from("/var/cache/pacman").join(repository)
 }
 
-pub fn ensure(repository: &str) {
-    if config_path(repository).exists() {
-        return;
-    }
+pub fn database_path(repository: &str) -> PathBuf {
+    repository_dir(repository).join(format!("{repository}.db.tar.gz"))
+}
 
-    println!("Local repository '{repository}' is not configured.");
+fn confirm_creation(repository: &str, message: &str) {
+    println!("{message}");
     print!("Create it? [Y/n] ");
     io::stdout().flush().expect("failed to flush stdout");
 
@@ -89,8 +89,44 @@ pub fn ensure(repository: &str) {
         std::process::exit(1);
     }
 
-    let repository_dir = PathBuf::from("/var/cache/pacman").join(repository);
+    println!("Creating local repository '{repository}'...");
+}
+
+pub fn ensure(repository: &str) {
     let config_path = config_path(repository);
+
+    if config_path.exists() {
+        let database = database_path(repository);
+
+        if database.exists() {
+            return;
+        }
+
+        confirm_creation(
+            repository,
+            &format!("Local repository '{repository}' has no database."),
+        );
+
+        let status = Command::new("sudo")
+            .arg("repo-add")
+            .arg(&database)
+            .status()
+            .expect("failed to run repo-add");
+
+        if !status.success() {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        println!("Local repository '{repository}' database created.");
+        return;
+    }
+
+    confirm_creation(
+        repository,
+        &format!("Local repository '{repository}' is not configured."),
+    );
+
+    let repository_dir = PathBuf::from("/var/cache/pacman").join(repository);
 
     let status = Command::new("sudo")
         .args(["mkdir", "-p"])

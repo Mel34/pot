@@ -18,8 +18,7 @@ pub fn cookbook_dir(configured: Option<&str>) -> PathBuf {
         }
 
         if let Some(path) = path.strip_prefix("~/") {
-            return PathBuf::from(env::var_os("HOME").expect("HOME is not set"))
-                .join(path);
+            return PathBuf::from(env::var_os("HOME").expect("HOME is not set")).join(path);
         }
 
         let path = PathBuf::from(path);
@@ -65,8 +64,7 @@ mod tests {
 
         assert_eq!(
             path,
-            PathBuf::from(env::var_os("HOME").unwrap())
-                .join("my-cookbook")
+            PathBuf::from(env::var_os("HOME").unwrap()).join("my-cookbook")
         );
     }
 
