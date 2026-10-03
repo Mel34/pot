@@ -24,7 +24,7 @@ enum MenuItem {
     Patch(usize, usize),
 }
 
-pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
+pub fn run(mut recipes: Vec<Recipe>) -> io::Result<()> {
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
@@ -36,10 +36,6 @@ pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
 
     let mut expanded = vec![false; recipes.len()];
     let mut selected = 0;
-    let mut selected_patches = recipes
-        .iter()
-        .map(|recipe| vec![false; recipe.patches.len()])
-        .collect::<Vec<_>>();
 
     loop {
         let mut menu_items = Vec::new();
@@ -78,6 +74,7 @@ pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
                 .map(|item| match item {
                     MenuItem::Recipe(recipe_index) => {
                         let recipe = &recipes[*recipe_index];
+
                         let marker = if expanded[*recipe_index] {
                             "▼"
                         } else {
@@ -95,11 +92,12 @@ pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
                         let patch = &recipes[*recipe_index].patches[*patch_index];
 
                         let name = patch
+                            .path
                             .file_name()
                             .and_then(|name| name.to_str())
                             .unwrap_or("<invalid filename>");
 
-                        let marker = if selected_patches[*recipe_index][*patch_index] {
+                        let marker = if patch.selected {
                             "[✓]"
                         } else {
                             "[ ]"
@@ -157,8 +155,12 @@ pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
                         if let Some(MenuItem::Patch(recipe_index, patch_index)) =
                             menu_items.get(selected)
                         {
-                            selected_patches[*recipe_index][*patch_index] =
-                                !selected_patches[*recipe_index][*patch_index];
+                            let recipe = &mut recipes[*recipe_index];
+                            let patch = &mut recipe.patches[*patch_index];
+
+                            patch.selected = !patch.selected;
+
+                            recipe.save_selection()?;
                         }
                     }
 
