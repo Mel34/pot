@@ -168,5 +168,25 @@ fn main() {
         std::process::exit(status.code().unwrap_or(1));
     }
 
+    let config = repository::config_path();
+
+    let status = std::process::Command::new("sudo")
+        .args([
+            "pacman",
+            "--config",
+            config.to_str().expect("repository config path is not valid UTF-8"),
+            "-Sy",
+        ])
+        .status()
+        .expect("failed to refresh local pacman repository");
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
     println!("Local repository updated.");
 }

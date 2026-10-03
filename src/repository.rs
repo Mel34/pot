@@ -22,6 +22,10 @@ pub fn name() -> String {
     name
 }
 
+pub fn config_path() -> PathBuf {
+    PathBuf::from("/etc/pacman.d").join(name())
+}
+
 pub fn repository_dir() -> PathBuf {
     let repository = name();
 
@@ -66,7 +70,3 @@ pub fn repository_dir() -> PathBuf {
     std::process::exit(1);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::repository_dir;
-}
