@@ -94,6 +94,19 @@ fn main() {
 
     println!("Overlay applied.");
 
+    for entry in std::fs::read_dir(&work_dir)
+        .expect("failed to read POT work directory")
+    {
+        let path = entry
+            .expect("failed to read POT work directory entry")
+            .path();
+
+        if path.to_string_lossy().ends_with(".pkg.tar.zst") {
+            std::fs::remove_file(&path)
+                .expect("failed to remove stale package artifact");
+        }
+    }
+
     let status = std::process::Command::new("makepkg")
         .args(["-e"])
         .current_dir(&work_dir)
