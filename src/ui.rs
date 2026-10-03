@@ -27,6 +27,7 @@ enum MenuItem {
 fn draw(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     recipes: &[Recipe],
+    cache_dir: &Path,
     expanded: &[bool],
     selected: usize,
     menu_items: &[MenuItem],
@@ -56,8 +57,14 @@ fn draw(
                         "▶"
                     };
 
+                    let ready = if prepare::is_prepared(cache_dir, &recipe.name) {
+                        "✓"
+                    } else {
+                        " "
+                    };
+
                     ListItem::new(format!(
-                        "{marker} {}  ({})",
+                        "{marker} {} {ready}  ({})",
                         recipe.name,
                         recipe.patches.len()
                     ))
@@ -165,6 +172,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
         draw(
             &mut terminal,
             &recipes,
+            cache_dir,
             &expanded,
             selected,
             &menu_items,
@@ -187,29 +195,66 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                     }
 
                     KeyCode::Enter => {
-                        if let Some(MenuItem::Recipe(recipe_index)) = menu_items.get(selected) {
-                            let (package_name, version) = {
-                                let recipe = &recipes[*recipe_index];
-                                package::resolve(&recipe.name)
-                            };
+                        match menu_items.get(selected) {
+                            Some(MenuItem::Recipe(recipe_index)) => {
+                                let (package_name, version) = {
+                                    let recipe = &recipes[*recipe_index];
+                                    package::resolve(&recipe.name)
+                                };
 
-                            draw(
-                                &mut terminal,
-                                &recipes,
-                                &expanded,
-                                selected,
-                                &menu_items,
-                                Some("Preparing sources…"),
-                            )?;
+                                draw(
+                                    &mut terminal,
+                                    &recipes,
+                                    cache_dir,
+                                    &expanded,
+                                    selected,
+                                    &menu_items,
+                                    Some("Preparing sources…"),
+                                )?;
 
-                            let work_dir = prepare::prepare_sources(
-                                cache_dir,
-                                &package_name,
-                                &version,
-                                verbose,
-                            );
+                                let work_dir = prepare::prepare_sources(
+                                    cache_dir,
+                                    &package_name,
+                                    &version,
+                                    verbose,
+                                );
 
-                            recipes[*recipe_index].check_patches(&work_dir.join("src"));
+                                recipes[*recipe_index].check_patches(&work_dir.join("src"));
+                            }
+
+                            Some(MenuItem::Patch(recipe_index, patch_index)) => {
+                                let (package_name, version) = {
+                                    let recipe = &recipes[*recipe_index];
+                                    package::resolve(&recipe.name)
+                                };
+
+                                draw(
+                                    &mut terminal,
+                                    &recipes,
+                                    cache_dir,
+                                    &expanded,
+                                    selected,
+                                    &menu_items,
+                                    Some("Verifying patch…"),
+                                )?;
+
+                                let work_dir =
+                                    if prepare::is_prepared(cache_dir, &package_name) {
+                                        cache_dir.join("work").join(&package_name)
+                                    } else {
+                                        prepare::prepare_sources(
+                                            cache_dir,
+                                            &package_name,
+                                            &version,
+                                            verbose,
+                                        )
+                                    };
+
+                                recipes[*recipe_index].patches[*patch_index]
+                                    .check(&work_dir.join("src"));
+                            }
+
+                            None => {}
                         }
                     }
 

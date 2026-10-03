@@ -32,13 +32,17 @@ pub fn prepare_sources(
     let work_dir = work_root.join(package);
 
     if !run_command(
-        Command::new("makepkg").args(["-so"]).current_dir(&work_dir),
+        Command::new("makepkg").args(["-sfo", "--noconfirm"]).current_dir(&work_dir),
         verbose,
     ) {
         std::process::exit(1);
     }
 
     work_dir
+}
+
+pub fn is_prepared(cache_dir: &Path, package: &str) -> bool {
+    cache_dir.join("work").join(package).join("src").is_dir()
 }
 
 fn run_command(command: &mut Command, verbose: bool) -> bool {
