@@ -13,7 +13,10 @@ fn main() {
     };
 
     let cache_dir = paths::cache_dir();
-    std::fs::create_dir_all(&cache_dir).expect("failed to create POT cache directory");
+    let repository_dir = repository::repository_dir();
+
+    std::fs::create_dir_all(&cache_dir)
+        .expect("failed to create POT cache directory");
 
     let output = std::process::Command::new("pacman")
         .args(["-Sp", "--print-format", "%r %n %v", &package])
@@ -39,12 +42,13 @@ fn main() {
 
     let work_dir = cache_dir.join("work").join(&package);
 
-    std::fs::create_dir_all(cache_dir.join("work")).expect("failed to create POT work directory");
+    std::fs::create_dir_all(cache_dir.join("work"))
+        .expect("failed to create POT work directory");
 
     println!("Repository: {repository}");
     println!("Package:    {selected_package}");
     println!("Version:    {version}");
-    println!("Workspace:  {}", work_dir.display());
+    println!("Repository: {}", repository_dir.display());
 
     let status = std::process::Command::new("pkgctl")
         .args([
@@ -63,7 +67,7 @@ fn main() {
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
-    
+
     let status = std::process::Command::new("makepkg")
         .args(["-so"])
         .current_dir(&work_dir)
@@ -84,6 +88,10 @@ fn main() {
         .status()
         .expect("failed to apply overlay patch");
 
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
     println!("Overlay applied.");
 
     let status = std::process::Command::new("makepkg")
@@ -96,11 +104,14 @@ fn main() {
         std::process::exit(status.code().unwrap_or(1));
     }
 
-    let repository_dir = std::path::PathBuf::from("/var/cache/pacman/alimyon");
     let mut packages = Vec::new();
 
-    for entry in std::fs::read_dir(&work_dir).expect("failed to read POT work directory") {
-        let path = entry.expect("failed to read POT work directory entry").path();
+    for entry in std::fs::read_dir(&work_dir)
+        .expect("failed to read POT work directory")
+    {
+        let path = entry
+            .expect("failed to read POT work directory entry")
+            .path();
 
         if path.extension().and_then(|ext| ext.to_str()) == Some("zst")
             && path.to_string_lossy().ends_with(".pkg.tar.zst")
@@ -120,12 +131,17 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!("Moved {} package artifact(s) to alimyon.", packages.len());
+    println!(
+        "Moved {} package artifact(s) to {}.",
+        packages.len(),
+        repository_dir.display()
+    );
+
+    let hostname = repository::name();
+    let database = repository_dir.join(format!("{hostname}.db.tar.gz"));
 
     let mut repo_add = std::process::Command::new("sudo");
-    repo_add
-        .arg("repo-add")
-        .arg(repository_dir.join("alimyon.db.tar.gz"));
+    repo_add.arg("repo-add").arg(database);
 
     for package in &packages {
         repo_add.arg(repository_dir.join(package));
