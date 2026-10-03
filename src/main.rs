@@ -4,6 +4,36 @@ mod repository;
 use std::env;
 
 fn main() {
+
+    let config_path = paths::config_path();
+
+    if !config_path.exists() {
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .expect("failed to create POT configuration directory");
+        }
+
+    std::fs::write(
+        &config_path,
+"################################################\n\
+# POT configuration                            #\n\
+# Uncomment an option to override the default. #\n\
+################################################\n\
+\n\
+# Path to the cookbook.\n\
+# Default: ~/Projects/cookbook\n\
+# Cookbook = ~/Projects/cookbook\n\
+\n\
+# Name of the local pacman repository.\n\
+# Default: hostname\n\
+# Repository = hostname\n\
+\n\
+# Interface verbosity.\n\
+# Default: false\n\
+# Verbose = false\n",
+    )
+    .expect("failed to create POT configuration file");
+    }
     let package = match env::args().nth(1) {
         Some(package) => package,
         None => {

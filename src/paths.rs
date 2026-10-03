@@ -16,3 +16,13 @@ pub fn cookbook_dir() -> PathBuf {
         .join("Projects")
         .join("cookbook")
 }
+
+pub fn config_path() -> PathBuf {
+    PathBuf::from(env::var_os("XDG_CONFIG_HOME").unwrap_or_else(|| {
+        PathBuf::from(env::var_os("HOME").expect("HOME is not set"))
+            .join(".config")
+            .into_os_string()
+    }))
+    .join("pot")
+    .join("config")
+}
