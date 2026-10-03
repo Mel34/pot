@@ -7,6 +7,7 @@ mod repository;
 mod ui;
 
 use std::env;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 fn run_command(command: &mut Command, verbose: bool) -> bool {
@@ -178,6 +179,12 @@ fn main() {
             let filename = path.file_name().expect("package has no filename");
             let destination = repository_dir.join(filename);
 
+            std::fs::set_permissions(
+                &path,
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .expect("failed to set package permissions");
+
             std::fs::rename(&path, &destination)
                 .expect("failed to move package into local repository");
 
@@ -198,8 +205,8 @@ fn main() {
 
     let database = repository_dir.join(format!("{repository_name}.db.tar.gz"));
 
-    let mut repo_add = Command::new("sudo");
-    repo_add.arg("repo-add").arg(database);
+    let mut repo_add = Command::new("repo-add");
+    repo_add.arg(database);
 
     for package in &packages {
         repo_add.arg(repository_dir.join(package));
