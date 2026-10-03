@@ -12,11 +12,17 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Terminal,
 };
 
 use crate::cookbook::Recipe;
+
+#[derive(Clone, Copy)]
+enum MenuItem {
+    Recipe(usize),
+    Patch(usize, usize),
+}
 
 pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
     enable_raw_mode()?;
@@ -28,66 +34,96 @@ pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let mut expanded = vec![false; recipes.len()];
     let mut selected = 0;
-    let mut expanded = false;
+    let mut selected_patches = recipes
+        .iter()
+        .map(|recipe| vec![false; recipe.patches.len()])
+        .collect::<Vec<_>>();
 
     loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
+        let mut menu_items = Vec::new();
 
-            let block = Block::default()
-                .title(" POT — The Cookbook ")
-                .borders(Borders::ALL);
+        for (recipe_index, recipe) in recipes.iter().enumerate() {
+            menu_items.push(MenuItem::Recipe(recipe_index));
 
-            let mut items = Vec::new();
-
-            for (index, recipe) in recipes.iter().enumerate() {
-                let marker = if index == selected && expanded {
-                    "▼"
-                } else {
-                    "▶"
-                };
-
-                items.push(ListItem::new(format!(
-                    "{marker} {}  ({})",
-                    recipe.name,
-                    recipe.patches.len()
-                )));
-
-                if index == selected && expanded {
-                    for patch in &recipe.patches {
-                        let name = patch
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("<invalid filename>");
-
-                        items.push(ListItem::new(format!("    [ ] {name}")));
-                    }
+            if expanded[recipe_index] {
+                for patch_index in 0..recipe.patches.len() {
+                    menu_items.push(MenuItem::Patch(recipe_index, patch_index));
                 }
             }
+        }
 
-            let list = List::new(items)
-                .block(block)
-                .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        if selected >= menu_items.len() {
+            selected = menu_items.len().saturating_sub(1);
+        }
+
+        terminal.draw(|frame| {
+            let area = frame.area();
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Min(1),
-                    Constraint::Length(2),
+                    Constraint::Length(1),
                 ])
                 .split(area);
+
+            let block = Block::default()
+                .title(" POT — The Cookbook ")
+                .borders(Borders::ALL);
+
+            let items: Vec<ListItem> = menu_items
+                .iter()
+                .map(|item| match item {
+                    MenuItem::Recipe(recipe_index) => {
+                        let recipe = &recipes[*recipe_index];
+                        let marker = if expanded[*recipe_index] {
+                            "▼"
+                        } else {
+                            "▶"
+                        };
+
+                        ListItem::new(format!(
+                            "{marker} {}  ({})",
+                            recipe.name,
+                            recipe.patches.len()
+                        ))
+                    }
+
+                    MenuItem::Patch(recipe_index, patch_index) => {
+                        let patch = &recipes[*recipe_index].patches[*patch_index];
+
+                        let name = patch
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("<invalid filename>");
+
+                        let marker = if selected_patches[*recipe_index][*patch_index] {
+                            "[✓]"
+                        } else {
+                            "[ ]"
+                        };
+
+                        ListItem::new(format!("    {marker} {name}"))
+                    }
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(block)
+                .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
             let mut state = ListState::default();
             state.select(Some(selected));
 
             frame.render_stateful_widget(list, chunks[0], &mut state);
 
-            let help = ListItem::new("↑↓ Navigate    Enter Expand    q Quit");
-            frame.render_widget(
-                List::new(vec![help]),
-                chunks[1],
+            let help = Paragraph::new(
+                "↑↓ Navigate    Enter Expand    Space Select    q Quit",
             );
+
+            frame.render_widget(help, chunks[1]);
         })?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -96,21 +132,34 @@ pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
                     KeyCode::Char('q') => break,
 
                     KeyCode::Up => {
-                        if selected > 0 {
-                            selected -= 1;
-                            expanded = false;
-                        }
+                        selected = selected.saturating_sub(1);
                     }
 
                     KeyCode::Down => {
-                        if selected + 1 < recipes.len() {
+                        if selected + 1 < menu_items.len() {
                             selected += 1;
-                            expanded = false;
                         }
                     }
 
                     KeyCode::Enter => {
-                        expanded = !expanded;
+                        if let Some(MenuItem::Recipe(recipe_index)) =
+                            menu_items.get(selected)
+                        {
+                            expanded[*recipe_index] = !expanded[*recipe_index];
+
+                            if !expanded[*recipe_index] {
+                                selected = selected.saturating_sub(1);
+                            }
+                        }
+                    }
+
+                    KeyCode::Char(' ') => {
+                        if let Some(MenuItem::Patch(recipe_index, patch_index)) =
+                            menu_items.get(selected)
+                        {
+                            selected_patches[*recipe_index][*patch_index] =
+                                !selected_patches[*recipe_index][*patch_index];
+                        }
                     }
 
                     _ => {}
