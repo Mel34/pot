@@ -1,17 +1,22 @@
 use std::io;
+use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     backend::CrosstermBackend,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, List, ListItem},
     Terminal,
 };
 
-pub fn run() -> io::Result<()> {
+use crate::cookbook::Recipe;
+
+pub fn run(recipes: Vec<Recipe>) -> io::Result<()> {
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
@@ -26,16 +31,23 @@ pub fn run() -> io::Result<()> {
             let area = frame.area();
 
             let block = Block::default()
-                .title(" POT ")
+                .title(" POT — The Cookbook ")
                 .borders(Borders::ALL);
 
-            let paragraph = Paragraph::new("Put your patches in the POT.\n\nPress q to quit.")
-                .block(block);
+            let items: Vec<ListItem> = recipes
+                .iter()
+                .map(|recipe| {
+                    let label = format!("{}  ({})", recipe.name, recipe.patches.len());
+                    ListItem::new(label)
+                })
+                .collect();
 
-            frame.render_widget(paragraph, area);
+            let list = List::new(items).block(block);
+
+            frame.render_widget(list, area);
         })?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('q') {
                     break;

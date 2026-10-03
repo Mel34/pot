@@ -1,3 +1,4 @@
+mod cookbook;
 mod config;
 mod paths;
 mod repository;
@@ -71,7 +72,24 @@ fn main() {
     let package = match env::args().nth(1) {
         Some(package) => package,
         None => {
-            if let Err(error) = ui::run() {
+            let repository_name = config
+                .repository
+                .clone()
+                .unwrap_or_else(repository::name);
+
+            repository::ensure(&repository_name);
+
+            let cookbook_dir = paths::cookbook_dir(config.cookbook.as_deref());
+
+            let recipes = match cookbook::discover(&cookbook_dir) {
+                Ok(recipes) => recipes,
+                Err(error) => {
+                    eprintln!("Failed to discover cookbook: {error}");
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(error) = ui::run(recipes) {
                 eprintln!("POT interface error: {error}");
                 std::process::exit(1);
             }
