@@ -1,6 +1,7 @@
 mod config;
 mod paths;
 mod repository;
+mod ui;
 
 use std::env;
 use std::process::Command;
@@ -70,8 +71,12 @@ fn main() {
     let package = match env::args().nth(1) {
         Some(package) => package,
         None => {
-            eprintln!("usage: pot <package>");
-            std::process::exit(2);
+            if let Err(error) = ui::run() {
+                eprintln!("POT interface error: {error}");
+                std::process::exit(1);
+            }
+
+            return;
         }
     };
 
@@ -185,7 +190,7 @@ fn main() {
     println!("Overlays applied.");
 
     for entry in std::fs::read_dir(&work_dir)
-        .expect("failed to read POT work directory")
+        .expect("failed to read POT work directory entry")
     {
         let path = entry
             .expect("failed to read POT work directory entry")
