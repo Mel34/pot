@@ -11,7 +11,24 @@ pub fn cache_dir() -> PathBuf {
         .join("pot")
 }
 
-pub fn cookbook_dir() -> PathBuf {
+pub fn cookbook_dir(configured: Option<&str>) -> PathBuf {
+    if let Some(path) = configured {
+        if path == "~" {
+            return PathBuf::from(env::var_os("HOME").expect("HOME is not set"));
+        }
+
+        if let Some(path) = path.strip_prefix("~/") {
+            return PathBuf::from(env::var_os("HOME").expect("HOME is not set"))
+                .join(path);
+        }
+
+        let path = PathBuf::from(path);
+
+        if path.is_absolute() {
+            return path;
+        }
+    }
+
     PathBuf::from(env::var_os("HOME").expect("HOME is not set"))
         .join("Projects")
         .join("cookbook")
@@ -25,4 +42,50 @@ pub fn config_path() -> PathBuf {
     }))
     .join("pot")
     .join("config")
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_cookbook_path() {
+        let path = cookbook_dir(None);
+
+        assert_eq!(
+            path,
+            PathBuf::from(env::var_os("HOME").unwrap())
+                .join("Projects")
+                .join("cookbook")
+        );
+    }
+
+    #[test]
+    fn expands_home_path() {
+        let path = cookbook_dir(Some("~/my-cookbook"));
+
+        assert_eq!(
+            path,
+            PathBuf::from(env::var_os("HOME").unwrap())
+                .join("my-cookbook")
+        );
+    }
+
+    #[test]
+    fn accepts_absolute_path() {
+        let path = cookbook_dir(Some("/tmp/my-cookbook"));
+
+        assert_eq!(path, PathBuf::from("/tmp/my-cookbook"));
+    }
+
+    #[test]
+    fn rejects_relative_path() {
+        let path = cookbook_dir(Some("my-cookbook"));
+
+        assert_eq!(
+            path,
+            PathBuf::from(env::var_os("HOME").unwrap())
+                .join("Projects")
+                .join("cookbook")
+        );
+    }
 }

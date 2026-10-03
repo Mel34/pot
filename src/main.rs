@@ -6,7 +6,7 @@ use std::env;
 
 fn main() {
 
-    let _config = config::load(&paths::config_path());
+    let config = config::load(&paths::config_path());
 
     let config_path = paths::config_path();
 
@@ -46,7 +46,7 @@ fn main() {
     };
 
     let cache_dir = paths::cache_dir();
-    let cookbook_dir = paths::cookbook_dir();
+    let cookbook_dir = paths::cookbook_dir(config.cookbook.as_deref());
     let package_cookbook_dir = cookbook_dir.join(&package);
     let repository_dir = repository::repository_dir();
 
