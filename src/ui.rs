@@ -10,9 +10,9 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::cookbook::{PatchStatus, Recipe};
@@ -22,6 +22,114 @@ use crate::{package, prepare};
 enum MenuItem {
     Recipe(usize),
     Patch(usize, usize),
+}
+
+fn draw(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    recipes: &[Recipe],
+    expanded: &[bool],
+    selected: usize,
+    menu_items: &[MenuItem],
+    busy: bool,
+) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area);
+
+        let block = Block::default()
+            .title(" POT — The Cookbook ")
+            .borders(Borders::ALL);
+
+        let items: Vec<ListItem> = menu_items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Recipe(recipe_index) => {
+                    let recipe = &recipes[*recipe_index];
+
+                    let marker = if expanded[*recipe_index] {
+                        "▼"
+                    } else {
+                        "▶"
+                    };
+
+                    ListItem::new(format!(
+                        "{marker} {}  ({})",
+                        recipe.name,
+                        recipe.patches.len()
+                    ))
+                }
+
+                MenuItem::Patch(recipe_index, patch_index) => {
+                    let patch = &recipes[*recipe_index].patches[*patch_index];
+
+                    let name = patch
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("<invalid filename>");
+
+                    let marker = if patch.selected { "[✓]" } else { "[ ]" };
+
+                    let status = match patch.status {
+                        PatchStatus::Unknown => "?",
+                        PatchStatus::Clean => "✓",
+                        PatchStatus::Failed => "✗",
+                    };
+
+                    ListItem::new(format!("    {marker} {name}  {status}"))
+                }
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+        let mut state = ListState::default();
+        state.select(Some(selected));
+
+        frame.render_stateful_widget(list, chunks[0], &mut state);
+
+        let help = Paragraph::new("↑↓ Navigate    Enter Expand    Space Select    q Quit");
+
+        frame.render_widget(help, chunks[1]);
+
+        if busy {
+            let vertical = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(40),
+                    Constraint::Length(5),
+                    Constraint::Percentage(60),
+                ])
+                .split(area);
+
+            let horizontal = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(30),
+                ])
+                .split(vertical[1]);
+
+            let popup_area = horizontal[1];
+
+            frame.render_widget(Clear, popup_area);
+
+            let popup = Paragraph::new("Preparing sources…\n\nPlease wait")
+                .alignment(Alignment::Center)
+                .block(Block::default().borders(Borders::ALL));
+
+            frame.render_widget(popup, popup_area);
+        }
+    })?;
+
+    Ok(())
 }
 
 pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Result<()> {
@@ -54,72 +162,14 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
             selected = menu_items.len().saturating_sub(1);
         }
 
-        terminal.draw(|frame| {
-            let area = frame.area();
-
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)])
-                .split(area);
-
-            let block = Block::default()
-                .title(" POT — The Cookbook ")
-                .borders(Borders::ALL);
-
-            let items: Vec<ListItem> = menu_items
-                .iter()
-                .map(|item| match item {
-                    MenuItem::Recipe(recipe_index) => {
-                        let recipe = &recipes[*recipe_index];
-
-                        let marker = if expanded[*recipe_index] {
-                            "▼"
-                        } else {
-                            "▶"
-                        };
-
-                        ListItem::new(format!(
-                            "{marker} {}  ({})",
-                            recipe.name,
-                            recipe.patches.len()
-                        ))
-                    }
-
-                    MenuItem::Patch(recipe_index, patch_index) => {
-                        let patch = &recipes[*recipe_index].patches[*patch_index];
-
-                        let name = patch
-                            .path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("<invalid filename>");
-
-                        let marker = if patch.selected { "[✓]" } else { "[ ]" };
-
-                        let status = match patch.status {
-                            PatchStatus::Unknown => "?",
-                            PatchStatus::Clean => "✓",
-                            PatchStatus::Failed => "✗",
-                        };
-
-                        ListItem::new(format!("    {marker} {name}  {status}"))
-                    }
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(block)
-                .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-
-            let mut state = ListState::default();
-            state.select(Some(selected));
-
-            frame.render_stateful_widget(list, chunks[0], &mut state);
-
-            let help = Paragraph::new("↑↓ Navigate    Enter Expand    Space Select    q Quit");
-
-            frame.render_widget(help, chunks[1]);
-        })?;
+        draw(
+            &mut terminal,
+            &recipes,
+            &expanded,
+            selected,
+            &menu_items,
+            false,
+        )?;
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -138,8 +188,19 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
 
                     KeyCode::Enter => {
                         if let Some(MenuItem::Recipe(recipe_index)) = menu_items.get(selected) {
-                            let recipe = &mut recipes[*recipe_index];
-                            let (package_name, version) = package::resolve(&recipe.name);
+                            let (package_name, version) = {
+                                let recipe = &recipes[*recipe_index];
+                                package::resolve(&recipe.name)
+                            };
+
+                            draw(
+                                &mut terminal,
+                                &recipes,
+                                &expanded,
+                                selected,
+                                &menu_items,
+                                true,
+                            )?;
 
                             let work_dir = prepare::prepare_sources(
                                 cache_dir,
@@ -148,7 +209,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                                 verbose,
                             );
 
-                            recipe.check_patches(&work_dir.join("src"));
+                            recipes[*recipe_index].check_patches(&work_dir.join("src"));
                         }
                     }
 
