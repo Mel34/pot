@@ -15,7 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-use crate::cookbook::Recipe;
+use crate::cookbook::{PatchStatus, Recipe};
 use crate::{package, prepare};
 
 #[derive(Clone, Copy)]
@@ -96,7 +96,13 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
 
                         let marker = if patch.selected { "[✓]" } else { "[ ]" };
 
-                        ListItem::new(format!("    {marker} {name}"))
+                        let status = match patch.status {
+                            PatchStatus::Unknown => "?",
+                            PatchStatus::Clean => "✓",
+                            PatchStatus::Failed => "✗",
+                        };
+
+                        ListItem::new(format!("    {marker} {name}  {status}"))
                     }
                 })
                 .collect();
