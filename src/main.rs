@@ -3,19 +3,26 @@ mod paths;
 mod repository;
 
 use std::env;
-use std::process::{Command, Output};
+use std::process::Command;
 
-fn run_command(command: &mut Command, verbose: bool) -> Output {
-    let output = command
-        .output()
-        .expect("failed to run command");
+fn run_command(command: &mut Command, verbose: bool) -> bool {
+    if verbose {
+        command
+            .status()
+            .expect("failed to run command")
+            .success()
+    } else {
+        let output = command
+            .output()
+            .expect("failed to run command");
 
-    if verbose || !output.status.success() {
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        if !output.status.success() {
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+
+        output.status.success()
     }
-
-    output
 }
 
 fn main() {
@@ -117,7 +124,7 @@ fn main() {
     println!("Repository: {}", repository_dir.display());
     println!("Cookbook:   {}", package_cookbook_dir.display());
 
-    let output = run_command(
+    if !run_command(
         Command::new("pkgctl")
             .args([
                 "repo",
@@ -130,21 +137,17 @@ fn main() {
             ])
             .current_dir(cache_dir.join("work")),
         verbose,
-    );
-
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
+    ) {
+        std::process::exit(1);
     }
 
-    let output = run_command(
+    if !run_command(
         Command::new("makepkg")
             .args(["-so"])
             .current_dir(&work_dir),
         verbose,
-    );
-
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
+    ) {
+        std::process::exit(1);
     }
 
     let mut patches = Vec::new();
@@ -168,16 +171,14 @@ fn main() {
     for patch in patches {
         println!("Applying overlay: {}", patch.display());
 
-        let output = run_command(
+        if !run_command(
             Command::new("git")
                 .args(["apply", "-p3"])
                 .arg(&patch)
                 .current_dir(work_dir.join("src").join("nautilus")),
             verbose,
-        );
-
-        if !output.status.success() {
-            std::process::exit(output.status.code().unwrap_or(1));
+        ) {
+            std::process::exit(1);
         }
     }
 
@@ -196,25 +197,22 @@ fn main() {
         }
     }
 
-    let output = run_command(
+    if !run_command(
         Command::new("makepkg")
             .args(["-e"])
             .current_dir(&work_dir),
         verbose,
-    );
-
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
+    ) {
+        std::process::exit(1);
     }
 
     let mut packages = Vec::new();
 
     for entry in std::fs::read_dir(&work_dir)
         .expect("failed to read POT work directory")
+        .flatten()
     {
-        let path = entry
-            .expect("failed to read POT work directory entry")
-            .path();
+        let path = entry.path();
 
         if path.extension().and_then(|ext| ext.to_str()) == Some("zst")
             && path.to_string_lossy().ends_with(".pkg.tar.zst")
@@ -249,15 +247,13 @@ fn main() {
         repo_add.arg(repository_dir.join(package));
     }
 
-    let output = run_command(&mut repo_add, verbose);
-
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
+    if !run_command(&mut repo_add, verbose) {
+        std::process::exit(1);
     }
 
     let config = repository::config_path(&repository_name);
 
-    let output = run_command(
+    if !run_command(
         Command::new("sudo")
             .args([
                 "pacman",
@@ -268,10 +264,8 @@ fn main() {
                 "-Sy",
             ]),
         verbose,
-    );
-
-    if !output.status.success() {
-        std::process::exit(output.status.code().unwrap_or(1));
+    ) {
+        std::process::exit(1);
     }
 
     println!("Local repository updated.");
