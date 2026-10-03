@@ -3,6 +3,20 @@ mod paths;
 mod repository;
 
 use std::env;
+use std::process::{Command, Output};
+
+fn run_command(command: &mut Command, verbose: bool) -> Output {
+    let output = command
+        .output()
+        .expect("failed to run command");
+
+    if verbose || !output.status.success() {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    output
+}
 
 fn main() {
     let config_path = paths::config_path();
@@ -44,6 +58,7 @@ fn main() {
     }
 
     let config = config::load(&config_path);
+    let verbose = config.verbose.unwrap_or(false);
 
     let package = match env::args().nth(1) {
         Some(package) => package,
@@ -62,12 +77,14 @@ fn main() {
         .clone()
         .unwrap_or_else(repository::name);
 
+    repository::ensure(&repository_name);
+
     let repository_dir = repository::repository_dir(&repository_name);
 
     std::fs::create_dir_all(&cache_dir)
         .expect("failed to create POT cache directory");
 
-    let output = std::process::Command::new("pacman")
+    let output = Command::new("pacman")
         .args(["-Sp", "--print-format", "%r %n %v", &package])
         .output()
         .expect("failed to run pacman");
@@ -80,17 +97,9 @@ fn main() {
     let selection = String::from_utf8_lossy(&output.stdout);
     let mut fields = selection.split_whitespace();
 
-    let _repository = fields
-        .next()
-        .expect("pacman returned no repository");
-
-    let selected_package = fields
-        .next()
-        .expect("pacman returned no package");
-
-    let version = fields
-        .next()
-        .expect("pacman returned no version");
+    let _repository = fields.next().expect("pacman returned no repository");
+    let selected_package = fields.next().expect("pacman returned no package");
+    let version = fields.next().expect("pacman returned no version");
 
     if selected_package != package {
         eprintln!("pacman selected unexpected package: {selected_package}");
@@ -108,32 +117,34 @@ fn main() {
     println!("Repository: {}", repository_dir.display());
     println!("Cookbook:   {}", package_cookbook_dir.display());
 
-    let status = std::process::Command::new("pkgctl")
-        .args([
-            "repo",
-            "clone",
-            "--protocol",
-            "https",
-            "--switch",
-            version,
-            &package,
-        ])
-        .current_dir(cache_dir.join("work"))
-        .status()
-        .expect("failed to run pkgctl");
+    let output = run_command(
+        Command::new("pkgctl")
+            .args([
+                "repo",
+                "clone",
+                "--protocol",
+                "https",
+                "--switch",
+                version,
+                &package,
+            ])
+            .current_dir(cache_dir.join("work")),
+        verbose,
+    );
 
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
     }
 
-    let status = std::process::Command::new("makepkg")
-        .args(["-so"])
-        .current_dir(&work_dir)
-        .status()
-        .expect("failed to run makepkg");
+    let output = run_command(
+        Command::new("makepkg")
+            .args(["-so"])
+            .current_dir(&work_dir),
+        verbose,
+    );
 
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
     }
 
     let mut patches = Vec::new();
@@ -157,15 +168,16 @@ fn main() {
     for patch in patches {
         println!("Applying overlay: {}", patch.display());
 
-        let status = std::process::Command::new("git")
-            .args(["apply", "-p3"])
-            .arg(&patch)
-            .current_dir(work_dir.join("src").join("nautilus"))
-            .status()
-            .expect("failed to apply overlay patch");
+        let output = run_command(
+            Command::new("git")
+                .args(["apply", "-p3"])
+                .arg(&patch)
+                .current_dir(work_dir.join("src").join("nautilus")),
+            verbose,
+        );
 
-        if !status.success() {
-            std::process::exit(status.code().unwrap_or(1));
+        if !output.status.success() {
+            std::process::exit(output.status.code().unwrap_or(1));
         }
     }
 
@@ -184,14 +196,15 @@ fn main() {
         }
     }
 
-    let status = std::process::Command::new("makepkg")
-        .args(["-e"])
-        .current_dir(&work_dir)
-        .status()
-        .expect("failed to run makepkg");
+    let output = run_command(
+        Command::new("makepkg")
+            .args(["-e"])
+            .current_dir(&work_dir),
+        verbose,
+    );
 
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
     }
 
     let mut packages = Vec::new();
@@ -229,35 +242,36 @@ fn main() {
 
     let database = repository_dir.join(format!("{repository_name}.db.tar.gz"));
 
-    let mut repo_add = std::process::Command::new("sudo");
+    let mut repo_add = Command::new("sudo");
     repo_add.arg("repo-add").arg(database);
 
     for package in &packages {
         repo_add.arg(repository_dir.join(package));
     }
 
-    let status = repo_add.status().expect("failed to run repo-add");
+    let output = run_command(&mut repo_add, verbose);
 
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
     }
 
     let config = repository::config_path(&repository_name);
 
-    let status = std::process::Command::new("sudo")
-        .args([
-            "pacman",
-            "--config",
-            config
-                .to_str()
-                .expect("repository config path is not valid UTF-8"),
-            "-Sy",
-        ])
-        .status()
-        .expect("failed to refresh local pacman repository");
+    let output = run_command(
+        Command::new("sudo")
+            .args([
+                "pacman",
+                "--config",
+                config
+                    .to_str()
+                    .expect("repository config path is not valid UTF-8"),
+                "-Sy",
+            ]),
+        verbose,
+    );
 
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
     }
 
     println!("Local repository updated.");
