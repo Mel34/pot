@@ -1,9 +1,12 @@
+mod config;
 mod paths;
 mod repository;
 
 use std::env;
 
 fn main() {
+
+    let _config = config::load(&paths::config_path());
 
     let config_path = paths::config_path();
 
