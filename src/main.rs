@@ -1,5 +1,6 @@
+mod paths;
+
 use std::env;
-use std::process::Command;
 
 fn main() {
     let package = match env::args().nth(1) {
@@ -10,7 +11,10 @@ fn main() {
         }
     };
 
-    let output = Command::new("pacman")
+    let cache_dir = paths::cache_dir();
+    std::fs::create_dir_all(&cache_dir).expect("failed to create POT cache directory");
+
+    let output = std::process::Command::new("pacman")
         .args(["-Sp", "--print-format", "%r %n %v", &package])
         .output()
         .expect("failed to run pacman");
@@ -20,5 +24,43 @@ fn main() {
         std::process::exit(output.status.code().unwrap_or(1));
     }
 
-    print!("{}", String::from_utf8_lossy(&output.stdout));
+    let selection = String::from_utf8_lossy(&output.stdout);
+    let mut fields = selection.split_whitespace();
+
+    let repository = fields.next().expect("pacman returned no repository");
+    let selected_package = fields.next().expect("pacman returned no package");
+    let version = fields.next().expect("pacman returned no version");
+
+    if selected_package != package {
+        eprintln!("pacman selected unexpected package: {selected_package}");
+        std::process::exit(1);
+    }
+
+    let work_dir = cache_dir.join("work").join(&package);
+
+    std::fs::create_dir_all(cache_dir.join("work"))
+    .expect("failed to create POT work directory");
+
+    println!("Repository: {repository}");
+    println!("Package:    {selected_package}");
+    println!("Version:    {version}");
+    println!("Workspace:  {}", work_dir.display());
+
+    let status = std::process::Command::new("pkgctl")
+        .args([
+            "repo",
+            "clone",
+            "--protocol",
+            "https",
+            "--switch",
+            version,
+            &package,
+        ])
+        .current_dir(cache_dir.join("work"))
+        .status()
+        .expect("failed to run pkgctl");
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
