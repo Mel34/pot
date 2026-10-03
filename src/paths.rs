@@ -10,3 +10,9 @@ pub fn cache_dir() -> PathBuf {
         .join(".cache")
         .join("pot")
 }
+
+pub fn cookbook_dir() -> PathBuf {
+    PathBuf::from(env::var_os("HOME").expect("HOME is not set"))
+        .join("Projects")
+        .join("cookbook")
+}

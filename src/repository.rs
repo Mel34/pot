@@ -58,9 +58,7 @@ pub fn repository_dir() -> PathBuf {
                     return PathBuf::from(path);
                 }
 
-                eprintln!(
-                    "repository {repository} does not use a local file:// server"
-                );
+                eprintln!("repository {repository} does not use a local file:// server");
                 std::process::exit(1);
             }
         }
@@ -69,4 +67,3 @@ pub fn repository_dir() -> PathBuf {
     eprintln!("repository {repository} was not found in pacman configuration");
     std::process::exit(1);
 }
-

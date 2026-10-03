@@ -13,10 +13,11 @@ fn main() {
     };
 
     let cache_dir = paths::cache_dir();
+    let cookbook_dir = paths::cookbook_dir();
+    let package_cookbook_dir = cookbook_dir.join(&package);
     let repository_dir = repository::repository_dir();
 
-    std::fs::create_dir_all(&cache_dir)
-        .expect("failed to create POT cache directory");
+    std::fs::create_dir_all(&cache_dir).expect("failed to create POT cache directory");
 
     let output = std::process::Command::new("pacman")
         .args(["-Sp", "--print-format", "%r %n %v", &package])
@@ -42,13 +43,13 @@ fn main() {
 
     let work_dir = cache_dir.join("work").join(&package);
 
-    std::fs::create_dir_all(cache_dir.join("work"))
-        .expect("failed to create POT work directory");
+    std::fs::create_dir_all(cache_dir.join("work")).expect("failed to create POT work directory");
 
     println!("Repository: {repository}");
     println!("Package:    {selected_package}");
     println!("Version:    {version}");
     println!("Repository: {}", repository_dir.display());
+    println!("Cookbook:   {}", package_cookbook_dir.display());
 
     let status = std::process::Command::new("pkgctl")
         .args([
@@ -78,32 +79,48 @@ fn main() {
         std::process::exit(status.code().unwrap_or(1));
     }
 
-    let status = std::process::Command::new("git")
-        .args([
-            "apply",
-            "-p3",
-            "/home/anon/Projects/nautilus-touchpad-swipe.patch",
-        ])
-        .current_dir(work_dir.join("src").join("nautilus"))
-        .status()
-        .expect("failed to apply overlay patch");
+    let mut patches = Vec::new();
 
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    if package_cookbook_dir.exists() {
+        for entry in std::fs::read_dir(&package_cookbook_dir)
+            .expect("failed to read cookbook package directory")
+        {
+            let path = entry
+                .expect("failed to read cookbook package directory entry")
+                .path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("patch") {
+                patches.push(path);
+            }
+        }
     }
 
-    println!("Overlay applied.");
+    patches.sort();
 
-    for entry in std::fs::read_dir(&work_dir)
-        .expect("failed to read POT work directory")
-    {
+    for patch in patches {
+        println!("Applying overlay: {}", patch.display());
+
+        let status = std::process::Command::new("git")
+            .args(["apply", "-p3"])
+            .arg(&patch)
+            .current_dir(work_dir.join("src").join("nautilus"))
+            .status()
+            .expect("failed to apply overlay patch");
+
+        if !status.success() {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+    }
+
+    println!("Overlays applied.");
+
+    for entry in std::fs::read_dir(&work_dir).expect("failed to read POT work directory") {
         let path = entry
             .expect("failed to read POT work directory entry")
             .path();
 
         if path.to_string_lossy().ends_with(".pkg.tar.zst") {
-            std::fs::remove_file(&path)
-                .expect("failed to remove stale package artifact");
+            std::fs::remove_file(&path).expect("failed to remove stale package artifact");
         }
     }
 
@@ -119,9 +136,7 @@ fn main() {
 
     let mut packages = Vec::new();
 
-    for entry in std::fs::read_dir(&work_dir)
-        .expect("failed to read POT work directory")
-    {
+    for entry in std::fs::read_dir(&work_dir).expect("failed to read POT work directory") {
         let path = entry
             .expect("failed to read POT work directory entry")
             .path();
@@ -160,9 +175,7 @@ fn main() {
         repo_add.arg(repository_dir.join(package));
     }
 
-    let status = repo_add
-        .status()
-        .expect("failed to run repo-add");
+    let status = repo_add.status().expect("failed to run repo-add");
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -174,7 +187,9 @@ fn main() {
         .args([
             "pacman",
             "--config",
-            config.to_str().expect("repository config path is not valid UTF-8"),
+            config
+                .to_str()
+                .expect("repository config path is not valid UTF-8"),
             "-Sy",
         ])
         .status()
