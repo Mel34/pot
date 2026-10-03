@@ -132,15 +132,17 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
 
                     KeyCode::Enter => {
                         if let Some(MenuItem::Recipe(recipe_index)) = menu_items.get(selected) {
-                            let recipe = &recipes[*recipe_index];
+                            let recipe = &mut recipes[*recipe_index];
                             let (package_name, version) = package::resolve(&recipe.name);
 
-                            prepare::prepare_sources(
+                            let work_dir = prepare::prepare_sources(
                                 cache_dir,
                                 &package_name,
                                 &version,
                                 verbose,
                             );
+
+                            recipe.check_patches(&work_dir.join("src"));
                         }
                     }
 
