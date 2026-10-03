@@ -30,7 +30,7 @@ fn draw(
     expanded: &[bool],
     selected: usize,
     menu_items: &[MenuItem],
-    busy: bool,
+    busy_message: Option<&str>,
 ) -> io::Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
@@ -94,11 +94,11 @@ fn draw(
 
         frame.render_stateful_widget(list, chunks[0], &mut state);
 
-        let help = Paragraph::new("↑↓ Navigate    Enter Expand    Space Select    q Quit");
+        let help = Paragraph::new("↑↓ Navigate    Enter Act    Space Select    q Quit");
 
         frame.render_widget(help, chunks[1]);
 
-        if busy {
+        if let Some(message) = busy_message {
             let vertical = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -121,7 +121,7 @@ fn draw(
 
             frame.render_widget(Clear, popup_area);
 
-            let popup = Paragraph::new("Preparing sources…\n\nPlease wait")
+            let popup = Paragraph::new(format!("{message}\n\nPlease wait"))
                 .alignment(Alignment::Center)
                 .block(Block::default().borders(Borders::ALL));
 
@@ -142,7 +142,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let expanded = vec![false; recipes.len()];
+    let expanded = vec![true; recipes.len()];
     let mut selected = 0;
 
     loop {
@@ -168,7 +168,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
             &expanded,
             selected,
             &menu_items,
-            false,
+            None,
         )?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -199,7 +199,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                                 &expanded,
                                 selected,
                                 &menu_items,
-                                true,
+                                Some("Preparing sources…"),
                             )?;
 
                             let work_dir = prepare::prepare_sources(
