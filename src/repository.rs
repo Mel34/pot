@@ -107,8 +107,7 @@ pub fn ensure(repository: &str) {
             &format!("Local repository '{repository}' has no database."),
         );
 
-        let status = Command::new("sudo")
-            .arg("repo-add")
+        let status = Command::new("repo-add")
             .arg(&database)
             .status()
             .expect("failed to run repo-add");
@@ -182,8 +181,7 @@ pub fn ensure(repository: &str) {
 
     let database = repository_dir.join(format!("{repository}.db.tar.gz"));
 
-    let status = Command::new("sudo")
-        .arg("repo-add")
+    let status = Command::new("repo-add")
         .arg(&database)
         .status()
         .expect("failed to run repo-add");
