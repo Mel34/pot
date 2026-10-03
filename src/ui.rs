@@ -1,22 +1,22 @@
 use std::io;
+use std::path::Path;
 use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Terminal,
 };
 
 use crate::cookbook::Recipe;
+use crate::{package, prepare};
 
 #[derive(Clone, Copy)]
 enum MenuItem {
@@ -24,7 +24,7 @@ enum MenuItem {
     Patch(usize, usize),
 }
 
-pub fn run(mut recipes: Vec<Recipe>) -> io::Result<()> {
+pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Result<()> {
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
@@ -34,7 +34,7 @@ pub fn run(mut recipes: Vec<Recipe>) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut expanded = vec![false; recipes.len()];
+    let expanded = vec![false; recipes.len()];
     let mut selected = 0;
 
     loop {
@@ -59,10 +59,7 @@ pub fn run(mut recipes: Vec<Recipe>) -> io::Result<()> {
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ])
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
                 .split(area);
 
             let block = Block::default()
@@ -97,11 +94,7 @@ pub fn run(mut recipes: Vec<Recipe>) -> io::Result<()> {
                             .and_then(|name| name.to_str())
                             .unwrap_or("<invalid filename>");
 
-                        let marker = if patch.selected {
-                            "[✓]"
-                        } else {
-                            "[ ]"
-                        };
+                        let marker = if patch.selected { "[✓]" } else { "[ ]" };
 
                         ListItem::new(format!("    {marker} {name}"))
                     }
@@ -117,9 +110,7 @@ pub fn run(mut recipes: Vec<Recipe>) -> io::Result<()> {
 
             frame.render_stateful_widget(list, chunks[0], &mut state);
 
-            let help = Paragraph::new(
-                "↑↓ Navigate    Enter Expand    Space Select    q Quit",
-            );
+            let help = Paragraph::new("↑↓ Navigate    Enter Expand    Space Select    q Quit");
 
             frame.render_widget(help, chunks[1]);
         })?;
@@ -140,14 +131,16 @@ pub fn run(mut recipes: Vec<Recipe>) -> io::Result<()> {
                     }
 
                     KeyCode::Enter => {
-                        if let Some(MenuItem::Recipe(recipe_index)) =
-                            menu_items.get(selected)
-                        {
-                            expanded[*recipe_index] = !expanded[*recipe_index];
+                        if let Some(MenuItem::Recipe(recipe_index)) = menu_items.get(selected) {
+                            let recipe = &recipes[*recipe_index];
+                            let (package_name, version) = package::resolve(&recipe.name);
 
-                            if !expanded[*recipe_index] {
-                                selected = selected.saturating_sub(1);
-                            }
+                            prepare::prepare_sources(
+                                cache_dir,
+                                &package_name,
+                                &version,
+                                verbose,
+                            );
                         }
                     }
 
