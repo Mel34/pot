@@ -1,4 +1,5 @@
 mod paths;
+mod repository;
 
 use std::env;
 
@@ -94,4 +95,49 @@ fn main() {
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
+
+    let repository_dir = std::path::PathBuf::from("/var/cache/pacman/alimyon");
+    let mut packages = Vec::new();
+
+    for entry in std::fs::read_dir(&work_dir).expect("failed to read POT work directory") {
+        let path = entry.expect("failed to read POT work directory entry").path();
+
+        if path.extension().and_then(|ext| ext.to_str()) == Some("zst")
+            && path.to_string_lossy().ends_with(".pkg.tar.zst")
+        {
+            let filename = path.file_name().expect("package has no filename");
+            let destination = repository_dir.join(filename);
+
+            std::fs::rename(&path, &destination)
+                .expect("failed to move package into local repository");
+
+            packages.push(filename.to_owned());
+        }
+    }
+
+    if packages.is_empty() {
+        eprintln!("makepkg produced no package artifacts");
+        std::process::exit(1);
+    }
+
+    println!("Moved {} package artifact(s) to alimyon.", packages.len());
+
+    let mut repo_add = std::process::Command::new("sudo");
+    repo_add
+        .arg("repo-add")
+        .arg(repository_dir.join("alimyon.db.tar.gz"));
+
+    for package in &packages {
+        repo_add.arg(repository_dir.join(package));
+    }
+
+    let status = repo_add
+        .status()
+        .expect("failed to run repo-add");
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    println!("Local repository updated.");
 }
