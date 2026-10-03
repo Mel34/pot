@@ -5,9 +5,6 @@ mod repository;
 use std::env;
 
 fn main() {
-
-    let config = config::load(&paths::config_path());
-
     let config_path = paths::config_path();
 
     if !config_path.exists() {
@@ -16,27 +13,38 @@ fn main() {
                 .expect("failed to create POT configuration directory");
         }
 
-    std::fs::write(
-        &config_path,
-"################################################\n\
-# POT configuration                            #\n\
-# Uncomment an option to override the default. #\n\
-################################################\n\
-\n\
-# Path to the cookbook.\n\
-# Default: ~/Projects/cookbook\n\
-# Cookbook = ~/Projects/cookbook\n\
-\n\
-# Name of the local pacman repository.\n\
-# Default: hostname\n\
-# Repository = hostname\n\
-\n\
-# Interface verbosity.\n\
-# Default: false\n\
-# Verbose = false\n",
-    )
-    .expect("failed to create POT configuration file");
+        let hostname = repository::name();
+
+        std::fs::write(
+            &config_path,
+            format!(
+                "################################################\n\
+                 # POT configuration                            #\n\
+                 # Uncomment an option to override the default. #\n\
+                 #                                              #\n\
+                 # Defaults shown below are used when options   #\n\
+                 # are commented out. The default repository    #\n\
+                 # name is the machine's hostname.              #\n\
+                 ################################################\n\
+                 \n\
+                 # Path to the cookbook.\n\
+                 # Default: ~/Projects/cookbook\n\
+                 # Cookbook = ~/Projects/cookbook\n\
+                 \n\
+                 # Name of the local pacman repository.\n\
+                 # Default: {hostname}\n\
+                 # Repository = {hostname}\n\
+                 \n\
+                 # Interface verbosity.\n\
+                 # Default: false\n\
+                 # Verbose = false\n",
+            ),
+        )
+        .expect("failed to create POT configuration file");
     }
+
+    let config = config::load(&config_path);
+
     let package = match env::args().nth(1) {
         Some(package) => package,
         None => {
@@ -48,9 +56,16 @@ fn main() {
     let cache_dir = paths::cache_dir();
     let cookbook_dir = paths::cookbook_dir(config.cookbook.as_deref());
     let package_cookbook_dir = cookbook_dir.join(&package);
-    let repository_dir = repository::repository_dir();
 
-    std::fs::create_dir_all(&cache_dir).expect("failed to create POT cache directory");
+    let repository_name = config
+        .repository
+        .clone()
+        .unwrap_or_else(repository::name);
+
+    let repository_dir = repository::repository_dir(&repository_name);
+
+    std::fs::create_dir_all(&cache_dir)
+        .expect("failed to create POT cache directory");
 
     let output = std::process::Command::new("pacman")
         .args(["-Sp", "--print-format", "%r %n %v", &package])
@@ -65,9 +80,17 @@ fn main() {
     let selection = String::from_utf8_lossy(&output.stdout);
     let mut fields = selection.split_whitespace();
 
-    let repository = fields.next().expect("pacman returned no repository");
-    let selected_package = fields.next().expect("pacman returned no package");
-    let version = fields.next().expect("pacman returned no version");
+    let _repository = fields
+        .next()
+        .expect("pacman returned no repository");
+
+    let selected_package = fields
+        .next()
+        .expect("pacman returned no package");
+
+    let version = fields
+        .next()
+        .expect("pacman returned no version");
 
     if selected_package != package {
         eprintln!("pacman selected unexpected package: {selected_package}");
@@ -76,9 +99,10 @@ fn main() {
 
     let work_dir = cache_dir.join("work").join(&package);
 
-    std::fs::create_dir_all(cache_dir.join("work")).expect("failed to create POT work directory");
+    std::fs::create_dir_all(cache_dir.join("work"))
+        .expect("failed to create POT work directory");
 
-    println!("Repository: {repository}");
+    println!("Repository: {repository_name}");
     println!("Package:    {selected_package}");
     println!("Version:    {version}");
     println!("Repository: {}", repository_dir.display());
@@ -147,13 +171,16 @@ fn main() {
 
     println!("Overlays applied.");
 
-    for entry in std::fs::read_dir(&work_dir).expect("failed to read POT work directory") {
+    for entry in std::fs::read_dir(&work_dir)
+        .expect("failed to read POT work directory")
+    {
         let path = entry
             .expect("failed to read POT work directory entry")
             .path();
 
         if path.to_string_lossy().ends_with(".pkg.tar.zst") {
-            std::fs::remove_file(&path).expect("failed to remove stale package artifact");
+            std::fs::remove_file(&path)
+                .expect("failed to remove stale package artifact");
         }
     }
 
@@ -169,7 +196,9 @@ fn main() {
 
     let mut packages = Vec::new();
 
-    for entry in std::fs::read_dir(&work_dir).expect("failed to read POT work directory") {
+    for entry in std::fs::read_dir(&work_dir)
+        .expect("failed to read POT work directory")
+    {
         let path = entry
             .expect("failed to read POT work directory entry")
             .path();
@@ -198,8 +227,7 @@ fn main() {
         repository_dir.display()
     );
 
-    let hostname = repository::name();
-    let database = repository_dir.join(format!("{hostname}.db.tar.gz"));
+    let database = repository_dir.join(format!("{repository_name}.db.tar.gz"));
 
     let mut repo_add = std::process::Command::new("sudo");
     repo_add.arg("repo-add").arg(database);
@@ -214,7 +242,7 @@ fn main() {
         std::process::exit(status.code().unwrap_or(1));
     }
 
-    let config = repository::config_path();
+    let config = repository::config_path(&repository_name);
 
     let status = std::process::Command::new("sudo")
         .args([
@@ -227,10 +255,6 @@ fn main() {
         ])
         .status()
         .expect("failed to refresh local pacman repository");
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
-    }
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));

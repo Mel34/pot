@@ -22,13 +22,11 @@ pub fn name() -> String {
     name
 }
 
-pub fn config_path() -> PathBuf {
-    PathBuf::from("/etc/pacman.d").join(name())
+pub fn config_path(repository: &str) -> PathBuf {
+    PathBuf::from("/etc/pacman.d").join(repository)
 }
 
-pub fn repository_dir() -> PathBuf {
-    let repository = name();
-
+pub fn repository_dir(repository: &str) -> PathBuf {
     let output = Command::new("pacman-conf")
         .output()
         .expect("failed to run pacman-conf");
