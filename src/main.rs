@@ -1,6 +1,7 @@
-mod cookbook;
 mod config;
+mod cookbook;
 mod paths;
+mod prepare;
 mod repository;
 mod ui;
 
@@ -9,14 +10,9 @@ use std::process::Command;
 
 fn run_command(command: &mut Command, verbose: bool) -> bool {
     if verbose {
-        command
-            .status()
-            .expect("failed to run command")
-            .success()
+        command.status().expect("failed to run command").success()
     } else {
-        let output = command
-            .output()
-            .expect("failed to run command");
+        let output = command.output().expect("failed to run command");
 
         if !output.status.success() {
             print!("{}", String::from_utf8_lossy(&output.stdout));
@@ -32,8 +28,7 @@ fn main() {
 
     if !config_path.exists() {
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)
-                .expect("failed to create POT configuration directory");
+            std::fs::create_dir_all(parent).expect("failed to create POT configuration directory");
         }
 
         let hostname = repository::name();
@@ -72,10 +67,7 @@ fn main() {
     let package = match env::args().nth(1) {
         Some(package) => package,
         None => {
-            let repository_name = config
-                .repository
-                .clone()
-                .unwrap_or_else(repository::name);
+            let repository_name = config.repository.clone().unwrap_or_else(repository::name);
 
             repository::ensure(&repository_name);
 
@@ -102,17 +94,13 @@ fn main() {
     let cookbook_dir = paths::cookbook_dir(config.cookbook.as_deref());
     let package_cookbook_dir = cookbook_dir.join(&package);
 
-    let repository_name = config
-        .repository
-        .clone()
-        .unwrap_or_else(repository::name);
+    let repository_name = config.repository.clone().unwrap_or_else(repository::name);
 
     repository::ensure(&repository_name);
 
     let repository_dir = repository::repository_dir(&repository_name);
 
-    std::fs::create_dir_all(&cache_dir)
-        .expect("failed to create POT cache directory");
+    std::fs::create_dir_all(&cache_dir).expect("failed to create POT cache directory");
 
     let output = Command::new("pacman")
         .args(["-Sp", "--print-format", "%r %n %v", &package])
@@ -136,42 +124,13 @@ fn main() {
         std::process::exit(1);
     }
 
-    let work_dir = cache_dir.join("work").join(&package);
-
-    std::fs::create_dir_all(cache_dir.join("work"))
-        .expect("failed to create POT work directory");
+    let work_dir = prepare::prepare_sources(&cache_dir, &package, &version, verbose);
 
     println!("Repository: {repository_name}");
     println!("Package:    {selected_package}");
     println!("Version:    {version}");
     println!("Repository: {}", repository_dir.display());
     println!("Cookbook:   {}", package_cookbook_dir.display());
-
-    if !run_command(
-        Command::new("pkgctl")
-            .args([
-                "repo",
-                "clone",
-                "--protocol",
-                "https",
-                "--switch",
-                version,
-                &package,
-            ])
-            .current_dir(cache_dir.join("work")),
-        verbose,
-    ) {
-        std::process::exit(1);
-    }
-
-    if !run_command(
-        Command::new("makepkg")
-            .args(["-so"])
-            .current_dir(&work_dir),
-        verbose,
-    ) {
-        std::process::exit(1);
-    }
 
     let mut patches = Vec::new();
 
@@ -207,23 +166,18 @@ fn main() {
 
     println!("Overlays applied.");
 
-    for entry in std::fs::read_dir(&work_dir)
-        .expect("failed to read POT work directory entry")
-    {
+    for entry in std::fs::read_dir(&work_dir).expect("failed to read POT work directory entry") {
         let path = entry
             .expect("failed to read POT work directory entry")
             .path();
 
         if path.to_string_lossy().ends_with(".pkg.tar.zst") {
-            std::fs::remove_file(&path)
-                .expect("failed to remove stale package artifact");
+            std::fs::remove_file(&path).expect("failed to remove stale package artifact");
         }
     }
 
     if !run_command(
-        Command::new("makepkg")
-            .args(["-e"])
-            .current_dir(&work_dir),
+        Command::new("makepkg").args(["-e"]).current_dir(&work_dir),
         verbose,
     ) {
         std::process::exit(1);
@@ -277,15 +231,14 @@ fn main() {
     let config = repository::config_path(&repository_name);
 
     if !run_command(
-        Command::new("sudo")
-            .args([
-                "pacman",
-                "--config",
-                config
-                    .to_str()
-                    .expect("repository config path is not valid UTF-8"),
-                "-Sy",
-            ]),
+        Command::new("sudo").args([
+            "pacman",
+            "--config",
+            config
+                .to_str()
+                .expect("repository config path is not valid UTF-8"),
+            "-Sy",
+        ]),
         verbose,
     ) {
         std::process::exit(1);
