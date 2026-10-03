@@ -31,11 +31,13 @@ pub fn prepare_sources(
 
     let work_dir = work_root.join(package);
 
-    if !run_command(
-        Command::new("makepkg").args(["-so"]).current_dir(&work_dir),
-        verbose,
-    ) {
-        std::process::exit(1);
+    if !work_dir.join("src").is_dir() {
+        if !run_command(
+            Command::new("makepkg").args(["-so"]).current_dir(&work_dir),
+            verbose,
+        ) {
+            std::process::exit(1);
+        }
     }
 
     work_dir
