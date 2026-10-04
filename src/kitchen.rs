@@ -1,7 +1,8 @@
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
+use std::process::Stdio;
 
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -18,6 +19,9 @@ pub fn cook(
     cache_dir: &Path,
     repository_name: &str,
     _log: bool,
+    event_tx: &std::sync::mpsc::Sender<crate::worker::WorkerEvent>,
+    recipe_index: usize,
+    cook_abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (String, bool) {
     let work_dir = cache_dir.join("work").join(recipe_name);
     let src_dir = work_dir.join("src");
@@ -38,24 +42,56 @@ pub fn cook(
             }
         };
 
-        output.push_str(&format!(
-            "Applying overlay: {}\n",
-            patch.display()
-        ));
-
-        let result = std::process::Command::new("git")
-            .args(["apply", "-p3"])
+        let check = std::process::Command::new("git")
+            .args(["apply", "--check", "-p3"])
             .arg(patch)
-            .current_dir(source_dir)
+            .current_dir(&source_dir)
             .output()
-            .expect("failed to run git apply");
+            .expect("failed to run git apply --check");
 
-        output.push_str(&String::from_utf8_lossy(&result.stdout));
-        output.push_str(&String::from_utf8_lossy(&result.stderr));
+        if check.status.success() {
+            output.push_str(&format!(
+                "Applying overlay: {}\n",
+                patch.display()
+            ));
 
-        if !result.status.success() {
-            success = false;
-            break;
+            let result = std::process::Command::new("git")
+                .args(["apply", "-p3"])
+                .arg(patch)
+                .current_dir(&source_dir)
+                .output()
+                .expect("failed to run git apply");
+
+            output.push_str(&String::from_utf8_lossy(&result.stdout));
+            output.push_str(&String::from_utf8_lossy(&result.stderr));
+
+            if !result.status.success() {
+                success = false;
+                break;
+            }
+        } else {
+            let reverse_check = std::process::Command::new("git")
+                .args(["apply", "--reverse", "--check", "-p3"])
+                .arg(patch)
+                .current_dir(&source_dir)
+                .output()
+                .expect("failed to run git apply --reverse --check");
+
+            if reverse_check.status.success() {
+                output.push_str(&format!(
+                    "Overlay already applied: {}\n",
+                    patch.display()
+                ));
+            } else {
+                output.push_str(&format!(
+                    "Overlay conflicts: {}\n",
+                    patch.display()
+                ));
+                output.push_str(&String::from_utf8_lossy(&check.stderr));
+                output.push_str(&String::from_utf8_lossy(&reverse_check.stderr));
+                success = false;
+                break;
+            }
         }
     }
 
@@ -91,16 +127,96 @@ pub fn cook(
 
         output.push_str("\nRunning makepkg -e...\n\n");
 
-        let result = std::process::Command::new("makepkg")
+        let mut child = std::process::Command::new("makepkg")
             .args(["-e"])
             .current_dir(&work_dir)
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .expect("failed to run makepkg");
 
-        output.push_str(&String::from_utf8_lossy(&result.stdout));
-        output.push_str(&String::from_utf8_lossy(&result.stderr));
+        let stdout = child
+            .stdout
+            .take()
+            .expect("makepkg stdout was not piped");
 
-        success = result.status.success();
+        let stderr = child
+            .stderr
+            .take()
+            .expect("makepkg stderr was not piped");
+
+        let (output_tx, output_rx) = std::sync::mpsc::channel();
+
+        let stdout_tx = output_tx.clone();
+        std::thread::spawn(move || {
+            let mut reader = stdout;
+            let mut buffer = [0u8; 4096];
+
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if stdout_tx
+                            .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let stderr_tx = output_tx.clone();
+        std::thread::spawn(move || {
+            let mut reader = stderr;
+            let mut buffer = [0u8; 4096];
+
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if stderr_tx
+                            .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        drop(output_tx);
+
+        while !cook_abort.load(std::sync::atomic::Ordering::Relaxed) {
+            match output_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(chunk) => {
+                    output.push_str(&chunk);
+
+                    event_tx
+                        .send(crate::worker::WorkerEvent::CookOutput {
+                            recipe_index,
+                            output: chunk,
+                        })
+                        .ok();
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        if cook_abort.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = child.kill();
+        }
+
+        let status = child
+            .wait()
+            .expect("failed to wait for makepkg");
+
+        success = status.success();
     }
 
     if success {
@@ -228,11 +344,13 @@ pub fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     worker_tx: &std::sync::mpsc::Sender<crate::worker::WorkerCommand>,
     worker_rx: &std::sync::mpsc::Receiver<crate::worker::WorkerEvent>,
+    recipe_index: usize,
     recipe: &Recipe,
     cache_dir: &Path,
     repository_name: &str,
     log: bool,
-) -> io::Result<()> {
+    start_cook: bool,
+) -> io::Result<bool> {
     let patches = recipe
         .patches
         .iter()
@@ -240,26 +358,51 @@ pub fn run(
         .map(|patch| patch.path.clone())
         .collect::<Vec<_>>();
 
-    worker_tx
-        .send(crate::worker::WorkerCommand::Cook {
-            recipe_name: recipe.name.clone(),
-            patches,
-            cache_dir: cache_dir.to_path_buf(),
-            repository_name: repository_name.to_owned(),
-            log,
-        })
-        .map_err(|_| io::Error::other("worker thread exited"))?;
+    if start_cook {
+        worker_tx
+            .send(crate::worker::WorkerCommand::Cook {
+                recipe_index,
+                recipe_name: recipe.name.clone(),
+                patches,
+                cache_dir: cache_dir.to_path_buf(),
+                repository_name: repository_name.to_owned(),
+                log,
+            })
+            .map_err(|_| io::Error::other("worker thread exited"))?;
+    }
 
-    let mut output = String::from("Cooking...\n");
+    let mut output = if start_cook {
+        String::from("Cooking...\n")
+    } else {
+        String::from("Cook in progress...\n")
+    };
+
+    let mut finished = false;
 
     loop {
         while let Ok(event) = worker_rx.try_recv() {
-            if let crate::worker::WorkerEvent::Cooked {
-                output: build_output,
-                success: _,
-            } = event
-            {
-                output = build_output;
+            match event {
+                crate::worker::WorkerEvent::CookOutput {
+                    recipe_index: cooked_recipe,
+                    output: chunk,
+                } => {
+                    if cooked_recipe == recipe_index {
+                        output.push_str(&chunk);
+                    }
+                }
+
+                crate::worker::WorkerEvent::Cooked {
+                    recipe_index: cooked_recipe,
+                    output: build_output,
+                    success: _,
+                } => {
+                    if cooked_recipe == recipe_index {
+                        output = build_output;
+                        finished = true;
+                    }
+                }
+
+                _ => {}
             }
         }
 
@@ -275,7 +418,13 @@ pub fn run(
                 .title(format!(" POT — The Kitchen — {} ", recipe.name))
                 .borders(Borders::ALL);
 
-            let body = Paragraph::new(output.as_str()).block(block);
+            let visible_lines = chunks[0].height.saturating_sub(2) as usize;
+            let line_count = output.lines().count();
+            let scroll = line_count.saturating_sub(visible_lines) as u16;
+
+            let body = Paragraph::new(output.as_str())
+                .block(block)
+                .scroll((scroll, 0));
 
             frame.render_widget(body, chunks[0]);
 
@@ -287,9 +436,15 @@ pub fn run(
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-                    _ => {}
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c')
+                {
+                    worker_tx.send(crate::worker::WorkerCommand::AbortCook).ok();
+                } else {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => return Ok(finished),
+                        _ => {}
+                    }
                 }
             }
         }

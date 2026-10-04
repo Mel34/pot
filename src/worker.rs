@@ -2,6 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 
 use crate::cookbook::PatchStatus;
@@ -28,12 +32,14 @@ pub enum WorkerCommand {
         source_dir: PathBuf,
     },
     Cook {
+        recipe_index: usize,
         recipe_name: String,
         patches: Vec<PathBuf>,
         cache_dir: PathBuf,
         repository_name: String,
         log: bool,
     },
+    AbortCook,
     Shutdown,
 }
 
@@ -56,7 +62,12 @@ pub enum WorkerEvent {
         patch_index: usize,
         status: PatchStatus,
     },
+    CookOutput {
+        recipe_index: usize,
+        output: String,
+    },
     Cooked {
+        recipe_index: usize,
         output: String,
         success: bool,
     },
@@ -66,6 +77,7 @@ pub enum WorkerEvent {
 pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
     let (command_tx, command_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
+    let cook_abort = Arc::new(AtomicBool::new(false));
 
     let (prepare_tx, prepare_rx) = mpsc::channel();
     let (verify_tx, verify_rx) = mpsc::channel();
@@ -145,7 +157,8 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                     WorkerCommand::Shutdown => break,
 
                     WorkerCommand::Verify { .. }
-                    | WorkerCommand::Cook { .. } => {}
+                    | WorkerCommand::Cook { .. }
+                    | WorkerCommand::AbortCook => {}
                 }
             }
         });
@@ -198,7 +211,8 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
 
                     WorkerCommand::Prepare { .. }
                     | WorkerCommand::Reset { .. }
-                    | WorkerCommand::Cook { .. } => {}
+                    | WorkerCommand::Cook { .. }
+                    | WorkerCommand::AbortCook => {}
                 }
             }
         });
@@ -206,11 +220,13 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
 
     {
         let event_tx = event_tx.clone();
+        let cook_abort = cook_abort.clone();
 
         thread::spawn(move || {
             while let Ok(command) = cook_rx.recv() {
                 match command {
                     WorkerCommand::Cook {
+                        recipe_index,
                         recipe_name,
                         patches,
                         cache_dir,
@@ -223,10 +239,17 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             &cache_dir,
                             &repository_name,
                             log,
+                            &event_tx,
+                            recipe_index,
+                            cook_abort.clone(),
                         );
 
                         event_tx
-                            .send(WorkerEvent::Cooked { output, success })
+                            .send(WorkerEvent::Cooked {
+                                recipe_index,
+                                output,
+                                success,
+                            })
                             .ok();
                     }
 
@@ -234,7 +257,8 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
 
                     WorkerCommand::Prepare { .. }
                     | WorkerCommand::Reset { .. }
-                    | WorkerCommand::Verify { .. } => {}
+                    | WorkerCommand::Verify { .. }
+                    | WorkerCommand::AbortCook => {}
                 }
             }
         });
@@ -245,6 +269,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
         let verify_tx = verify_tx.clone();
         let cook_tx = cook_tx.clone();
         let event_tx = event_tx.clone();
+        let cook_abort = cook_abort.clone();
 
         thread::spawn(move || {
             event_tx.send(WorkerEvent::Ready).ok();
@@ -264,7 +289,12 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                     }
 
                     WorkerCommand::Cook { .. } => {
+                        cook_abort.store(false, Ordering::Relaxed);
                         cook_tx.send(command).ok();
+                    }
+
+                    WorkerCommand::AbortCook => {
+                        cook_abort.store(true, Ordering::Relaxed);
                     }
 
                     WorkerCommand::Shutdown => {
