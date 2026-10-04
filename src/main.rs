@@ -30,47 +30,21 @@ fn run_command(command: &mut Command, log: bool) -> bool {
 fn main() {
     let config_path = paths::config_path();
 
-    if !config_path.exists() {
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create POT configuration directory");
-        }
-
-        let hostname = repository::name();
-
-        std::fs::write(
-            &config_path,
-            format!(
-                "################################################\n\
-                 # POT configuration                            #\n\
-                 # Uncomment an option to override the default. #\n\
-                 #                                              #\n\
-                 # Defaults shown below are used when options   #\n\
-                 # are commented out. The default repository    #\n\
-                 # name is the machine's hostname.              #\n\
-                 ################################################\n\
-                 \n\
-                 # Path to the cookbook.\n\
-                 # Default: ~/Projects/cookbook\n\
-                 # Cookbook = ~/Projects/cookbook\n\
-                 \n\
-                 # Name of the local pacman repository.\n\
-                 # Default: {hostname}\n\
-                 # Repository = {hostname}\n\
-                 \n\
-                 # Interface verbosity.\n\
-                 # Default: false\n\
-                 # Verbose = false\n",
-            ),
-        )
-        .expect("failed to create POT configuration file");
-    }
-
     let config = config::load(&config_path);
     let log = config.log.unwrap_or(false);
 
     let package = match env::args().nth(1) {
         Some(package) => package,
         None => {
+            if !config_path.exists() {
+                if let Err(error) = ui::first_start() {
+                    eprintln!("POT interface error: {error}");
+                    std::process::exit(1);
+                }
+
+                return;
+            }
+
             let repository_name = config.repository.clone().unwrap_or_else(repository::name);
 
             repository::ensure(&repository_name);

@@ -29,6 +29,7 @@ enum MenuItem {
 enum WorkerStatus {
     Preparing,
     Resetting,
+    Cooking,
 }
 
 fn middle_truncate(name: &str, max_width: usize) -> String {
@@ -79,6 +80,7 @@ fn draw(
     cache_dir: &Path,
     expanded: &[bool],
     worker_status: &[Option<WorkerStatus>],
+    cook_status: &[Option<String>],
     selected: usize,
     menu_items: &[MenuItem],
 ) -> io::Result<()> {
@@ -101,6 +103,10 @@ fn draw(
 
         let mut items = vec![header, separator];
 
+        let cooking_recipe = worker_status
+            .iter()
+            .position(|status| matches!(status, Some(WorkerStatus::Cooking)));
+
         for item in menu_items {
             match item {
                 MenuItem::Recipe(recipe_index) => {
@@ -115,10 +121,27 @@ fn draw(
                     let is_prepared = prepare::is_prepared(cache_dir, &recipe.name);
 
                     let status = match worker_status[*recipe_index] {
-                        Some(WorkerStatus::Preparing) => "[preparing sources...]",
-                        Some(WorkerStatus::Resetting) => "[resetting source...]",
-                        None if is_prepared => "[ready to cook]",
-                        None => "",
+                        Some(WorkerStatus::Preparing) => {
+                            "[preparing sources...]".to_owned()
+                        }
+                        Some(WorkerStatus::Resetting) => {
+                            "[resetting source...]".to_owned()
+                        }
+                        Some(WorkerStatus::Cooking) => cook_status[*recipe_index]
+                            .as_deref()
+                            .map(|status| format!("[{status}]"))
+                            .unwrap_or_else(|| "[cooking]".to_owned()),
+                        None if cooking_recipe.is_some() => {
+                            "[please wait, cook in progress]".to_owned()
+                        }
+                        None if cook_status[*recipe_index].is_some() => {
+                            cook_status[*recipe_index]
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_owned()
+                        }
+                        None if is_prepared => "[ready to cook]".to_owned(),
+                        None => String::new(),
                     };
 
                     let prefix = format!(
@@ -126,7 +149,7 @@ fn draw(
                         recipe.patches.len()
                     );
 
-                    let status_width = Line::raw(status).width();
+                    let status_width = Line::raw(&status).width();
 
                     let name_width = content_width
                         .saturating_sub(Line::raw(&prefix).width())
@@ -209,6 +232,74 @@ fn draw(
     Ok(())
 }
 
+pub fn first_start() -> io::Result<()> {
+    enable_raw_mode()?;
+
+    let mut stdout = io::stdout();
+
+    execute!(stdout, EnterAlternateScreen)?;
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+
+            let block = Block::default()
+                .title(" POT — First Start Setup ")
+                .borders(Borders::ALL);
+
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                    Constraint::Length(2),
+                ])
+                .split(inner);
+
+            let title = Paragraph::new("Welcome to POT")
+                .style(Style::default().add_modifier(Modifier::BOLD));
+
+            let message = Paragraph::new(
+                "POT needs to be configured before it can open the Cookbook.\n\
+                 This setup will configure the local pacman repository used by POT.",
+            );
+
+            let help = Paragraph::new("[Enter] Continue    [Esc] Quit");
+
+            frame.render_widget(title, chunks[0]);
+            frame.render_widget(message, chunks[1]);
+            frame.render_widget(help, chunks[2]);
+        })?;
+
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Enter => break,
+                    KeyCode::Esc => {
+                        disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                        terminal.show_cursor()?;
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    Ok(())
+}
+
 pub fn run(
     mut recipes: Vec<Recipe>,
     cache_dir: &Path,
@@ -232,6 +323,7 @@ pub fn run(
 
     let mut expanded = vec![false; recipes.len()];
     let mut worker_status = vec![None; recipes.len()];
+    let mut cook_status = vec![None; recipes.len()];
     let mut selected = 0;
 
     loop {
@@ -266,9 +358,30 @@ pub fn run(
                     recipes[recipe_index].patches[patch_index].status = status;
                 }
 
+                crate::worker::WorkerEvent::Cooked {
+                    recipe_index,
+                    output: _,
+                    success,
+                } => {
+                    worker_status[recipe_index] = None;
+                    cook_status[recipe_index] = Some(if success {
+                        "[cooked successfully]".to_owned()
+                    } else {
+                        "[cook failed]".to_owned()
+                    });
+                }
+
+                crate::worker::WorkerEvent::CookOutput { .. } => {}
+
+                crate::worker::WorkerEvent::CookStatus {
+                    recipe_index,
+                    status,
+                } => {
+                    cook_status[recipe_index] = Some(status);
+                }
+
                 crate::worker::WorkerEvent::Ready
-                | crate::worker::WorkerEvent::Stopped
-                | crate::worker::WorkerEvent::Cooked { .. } => {}
+                | crate::worker::WorkerEvent::Stopped => {}
             }
         }
 
@@ -294,6 +407,7 @@ pub fn run(
             cache_dir,
             &expanded,
             &worker_status,
+            &cook_status,
             selected,
             &menu_items,
         )?;
@@ -334,31 +448,75 @@ pub fn run(
                             Some(MenuItem::Recipe(recipe_index)) => {
                                 let recipe = &recipes[*recipe_index];
 
-                                if prepare::is_prepared(cache_dir, &recipe.name) {
-                                    kitchen::run(
-                                        &mut terminal,
-                                        &worker_tx,
-                                        &worker_rx,
-                                        recipe,
-                                        cache_dir,
-                                        repository_name,
-                                        log,
-                                    )?;
-                                } else {
-                                    let (package_name, version) =
-                                        package::resolve(&recipe.name);
-
-                                    worker_tx
-                                        .send(crate::worker::WorkerCommand::Prepare {
-                                            recipe_index: *recipe_index,
-                                            cache_dir: cache_dir.to_path_buf(),
-                                            package: package_name,
-                                            version,
+                                match worker_status[*recipe_index] {
+                                    Some(WorkerStatus::Cooking) => {
+                                        let finished = kitchen::run(
+                                            &mut terminal,
+                                            &worker_tx,
+                                            &worker_rx,
+                                            *recipe_index,
+                                            recipe,
+                                            cache_dir,
+                                            repository_name,
                                             log,
-                                        })
-                                        .map_err(|_| {
-                                            io::Error::other("worker thread exited")
-                                        })?;
+                                            false,
+                                        )?;
+
+                                        if finished {
+                                            worker_status[*recipe_index] = None;
+                                            cook_status[*recipe_index] = None;
+                                        }
+                                    }
+
+                                    Some(WorkerStatus::Preparing)
+                                    | Some(WorkerStatus::Resetting) => {}
+
+                                    None if worker_status
+                                        .iter()
+                                        .any(|status| matches!(status, Some(WorkerStatus::Cooking))) => {}
+
+                                    None if prepare::is_prepared(
+                                        cache_dir,
+                                        &recipe.name,
+                                    ) => {
+                                        worker_status[*recipe_index] =
+                                            Some(WorkerStatus::Cooking);
+                                        cook_status[*recipe_index] =
+                                            Some("starting cook".to_owned());
+
+                                        let finished = kitchen::run(
+                                            &mut terminal,
+                                            &worker_tx,
+                                            &worker_rx,
+                                            *recipe_index,
+                                            recipe,
+                                            cache_dir,
+                                            repository_name,
+                                            log,
+                                            true,
+                                        )?;
+
+                                        if finished {
+                                            worker_status[*recipe_index] = None;
+                                        }
+                                    }
+
+                                    None => {
+                                        let (package_name, version) =
+                                            package::resolve(&recipe.name);
+
+                                        worker_tx
+                                            .send(crate::worker::WorkerCommand::Prepare {
+                                                recipe_index: *recipe_index,
+                                                cache_dir: cache_dir.to_path_buf(),
+                                                package: package_name,
+                                                version,
+                                                log,
+                                            })
+                                            .map_err(|_| {
+                                                io::Error::other("worker thread exited")
+                                            })?;
+                                    }
                                 }
                             }
 
