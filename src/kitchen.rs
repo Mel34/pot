@@ -50,6 +50,18 @@ pub fn cook(
             .expect("failed to run git apply --check");
 
         if check.status.success() {
+            event_tx
+                .send(crate::worker::WorkerEvent::CookStatus {
+                    recipe_index,
+                    status: format!(
+                        "applying {}",
+                        patch.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("overlay"),
+                    ),
+                })
+                .ok();
+
             output.push_str(&format!(
                 "Applying overlay: {}\n",
                 patch.display()
@@ -126,6 +138,13 @@ pub fn cook(
         }
 
         output.push_str("\nRunning makepkg -e...\n\n");
+
+        event_tx
+            .send(crate::worker::WorkerEvent::CookStatus {
+                recipe_index,
+                status: "running makepkg".to_owned(),
+            })
+            .ok();
 
         let mut child = std::process::Command::new("makepkg")
             .args(["-e"])
@@ -309,6 +328,13 @@ pub fn cook(
     }
 
     if success {
+        event_tx
+            .send(crate::worker::WorkerEvent::CookStatus {
+                recipe_index,
+                status: "updating repository".to_owned(),
+            })
+            .ok();
+
         output.push_str("\nUpdating pacman repository database...\n");
 
         let config = repository::config_path(repository_name);

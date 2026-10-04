@@ -3,6 +3,7 @@ mod cookbook;
 mod kitchen;
 mod paths;
 mod package;
+mod pacman;
 mod prepare;
 mod repository;
 mod ui;

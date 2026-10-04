@@ -66,6 +66,10 @@ pub enum WorkerEvent {
         recipe_index: usize,
         output: String,
     },
+    CookStatus {
+        recipe_index: usize,
+        status: String,
+    },
     Cooked {
         recipe_index: usize,
         output: String,
