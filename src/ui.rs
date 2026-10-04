@@ -27,7 +27,6 @@ enum MenuItem {
 #[derive(Clone, Copy)]
 enum WorkerStatus {
     Preparing,
-    CheckingPatches,
 }
 
 fn draw(
@@ -71,7 +70,6 @@ fn draw(
 
                     let status = match worker_status[*recipe_index] {
                         Some(WorkerStatus::Preparing) => "  [preparing sources...]",
-                        Some(WorkerStatus::CheckingPatches) => "  [checking patches...]",
                         None => "",
                     };
 
@@ -113,7 +111,7 @@ fn draw(
 
         frame.render_stateful_widget(list, chunks[0], &mut state);
 
-        let help = Paragraph::new("↑↓ Navigate    Enter Act    Space Select    q Quit");
+        let help = Paragraph::new("[↑↓] Navigate    [Enter] Cook    [Space] Select    [q] Quit");
 
         frame.render_widget(help, chunks[1]);
     })?;
@@ -137,9 +135,8 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let expanded = vec![true; recipes.len()];
+    let mut expanded = vec![false; recipes.len()];
     let mut worker_status = vec![None; recipes.len()];
-    let mut pending_verifications = vec![0usize; recipes.len()];
     let mut selected = 0;
 
     loop {
@@ -153,32 +150,8 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                     recipe_index,
                     work_dir,
                 } => {
-                    let patch_count = recipes[recipe_index].patches.len();
-
-                    worker_status[recipe_index] = if patch_count > 0 {
-                        Some(WorkerStatus::CheckingPatches)
-                    } else {
-                        None
-                    };
-
-                    pending_verifications[recipe_index] = patch_count;
-
-                    let source_dir = work_dir.join("src");
-
-                    for (patch_index, patch) in
-                        recipes[recipe_index].patches.iter().enumerate()
-                    {
-                        worker_tx
-                            .send(crate::worker::WorkerCommand::Verify {
-                                recipe_index,
-                                patch_index,
-                                patch_path: patch.path.clone(),
-                                source_dir: source_dir.clone(),
-                            })
-                            .map_err(|_| {
-                                io::Error::other("worker thread exited")
-                            })?;
-                    }
+                    worker_status[recipe_index] = None;
+                    recipes[recipe_index].check_patches(&work_dir.join("src"));
                 }
 
                 crate::worker::WorkerEvent::Verified {
@@ -187,13 +160,6 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                     status,
                 } => {
                     recipes[recipe_index].patches[patch_index].status = status;
-
-                    pending_verifications[recipe_index] =
-                        pending_verifications[recipe_index].saturating_sub(1);
-
-                    if pending_verifications[recipe_index] == 0 {
-                        worker_status[recipe_index] = None;
-                    }
                 }
 
                 crate::worker::WorkerEvent::Ready
@@ -242,6 +208,22 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                         }
                     }
 
+                    KeyCode::Left => {
+                        if let Some(MenuItem::Recipe(recipe_index)) =
+                            menu_items.get(selected)
+                        {
+                            expanded[*recipe_index] = false;
+                        }
+                    }
+
+                    KeyCode::Right => {
+                        if let Some(MenuItem::Recipe(recipe_index)) =
+                            menu_items.get(selected)
+                        {
+                            expanded[*recipe_index] = true;
+                        }
+                    }
+
                     KeyCode::Enter => {
                         match menu_items.get(selected) {
                             Some(MenuItem::Recipe(recipe_index)) => {
@@ -285,13 +267,22 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                                     let (package_name, version) =
                                         package::resolve(&recipe.name);
 
+                                    let work_dir = prepare::prepare_sources(
+                                        cache_dir,
+                                        &package_name,
+                                        &version,
+                                        verbose,
+                                    );
+
+                                    let patch_path =
+                                        recipe.patches[*patch_index].path.clone();
+
                                     worker_tx
-                                        .send(crate::worker::WorkerCommand::Prepare {
+                                        .send(crate::worker::WorkerCommand::Verify {
                                             recipe_index: *recipe_index,
-                                            cache_dir: cache_dir.to_path_buf(),
-                                            package: package_name,
-                                            version,
-                                            verbose,
+                                            patch_index: *patch_index,
+                                            patch_path,
+                                            source_dir: work_dir.join("src"),
                                         })
                                         .map_err(|_| {
                                             io::Error::other("worker thread exited")
