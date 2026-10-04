@@ -33,6 +33,7 @@ enum WorkerStatus {
 
 fn middle_truncate(name: &str, max_width: usize) -> String {
     let line = Line::raw(name);
+
     if line.width() <= max_width {
         return name.to_owned();
     }
@@ -47,7 +48,15 @@ fn middle_truncate(name: &str, max_width: usize) -> String {
 
     loop {
         let left_part: String = chars.iter().take(left).collect();
-        let right_part: String = chars.iter().rev().take(right).collect::<Vec<_>>().into_iter().rev().collect();
+        let right_part: String = chars
+            .iter()
+            .rev()
+            .take(right)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
         let result = format!("{left_part}…{right_part}");
 
         if Line::raw(&result).width() <= max_width {
@@ -85,9 +94,15 @@ fn draw(
             .title(" POT — The Cookbook ")
             .borders(Borders::ALL);
 
-        let items: Vec<ListItem> = menu_items
-            .iter()
-            .map(|item| match item {
+        let content_width = chunks[0].width.saturating_sub(2) as usize;
+
+        let header = ListItem::new("Patches   Recipe");
+        let separator = ListItem::new("─".repeat(content_width));
+
+        let mut items = vec![header, separator];
+
+        for item in menu_items {
+            match item {
                 MenuItem::Recipe(recipe_index) => {
                     let recipe = &recipes[*recipe_index];
 
@@ -99,12 +114,6 @@ fn draw(
 
                     let is_prepared = prepare::is_prepared(cache_dir, &recipe.name);
 
-                    let ready = if is_prepared {
-                        "✓"
-                    } else {
-                        " "
-                    };
-
                     let status = match worker_status[*recipe_index] {
                         Some(WorkerStatus::Preparing) => "[preparing sources...]",
                         Some(WorkerStatus::Resetting) => "[resetting source...]",
@@ -113,25 +122,32 @@ fn draw(
                     };
 
                     let prefix = format!(
-                        "{marker} {ready}  ({})  ",
+                        "{marker} ({})     ",
                         recipe.patches.len()
                     );
-                    let content_width = chunks[0].width.saturating_sub(2) as usize;
+
                     let status_width = Line::raw(status).width();
-                    let name_width = if status.is_empty() {
-                        content_width.saturating_sub(Line::raw(&prefix).width())
-                    } else {
-                        content_width
-                            .saturating_sub(Line::raw(&prefix).width())
-                            .saturating_sub(status_width)
-                            .saturating_sub(2)
-                    };
+
+                    let name_width = content_width
+                        .saturating_sub(Line::raw(&prefix).width())
+                        .saturating_sub(status_width)
+                        .saturating_sub(if status.is_empty() { 0 } else { 2 });
+
                     let name = middle_truncate(&recipe.name, name_width);
-                    let separator = if status.is_empty() { "" } else { "  " };
-                    ListItem::new(Line::from(vec![
-                        Span::raw(format!("{prefix}{name}{separator}")),
+
+                    let used_width =
+                        Line::raw(&format!("{prefix}{name}")).width();
+
+                    let gap = content_width
+                        .saturating_sub(used_width)
+                        .saturating_sub(status_width);
+
+                    let filler = " ".repeat(gap);
+
+                    items.push(ListItem::new(Line::from(vec![
+                        Span::raw(format!("{prefix}{name}{filler}")),
                         Span::raw(status),
-                    ]))
+                    ])));
                 }
 
                 MenuItem::Patch(recipe_index, patch_index) => {
@@ -151,17 +167,22 @@ fn draw(
                         PatchStatus::Failed => "✗",
                     };
 
-                    ListItem::new(format!("    {marker} {name}  {status}"))
+                    items.push(ListItem::new(format!(
+                        "    {marker} {name}  {status}"
+                    )));
                 }
-            })
-            .collect();
+            }
+        }
 
         let list = List::new(items)
             .block(block)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         let mut state = ListState::default();
-        state.select(Some(selected));
+
+        if !menu_items.is_empty() {
+            state.select(Some(selected + 2));
+        }
 
         frame.render_stateful_widget(list, chunks[0], &mut state);
 
