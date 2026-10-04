@@ -62,7 +62,9 @@ fn draw(
                         "▶"
                     };
 
-                    let ready = if prepare::is_prepared(cache_dir, &recipe.name) {
+                    let is_prepared = prepare::is_prepared(cache_dir, &recipe.name);
+
+                    let ready = if is_prepared {
                         "✓"
                     } else {
                         " "
@@ -70,6 +72,7 @@ fn draw(
 
                     let status = match worker_status[*recipe_index] {
                         Some(WorkerStatus::Preparing) => "  [preparing sources...]",
+                        None if is_prepared => "  [ready to cook]",
                         None => "",
                     };
 
@@ -111,7 +114,20 @@ fn draw(
 
         frame.render_stateful_widget(list, chunks[0], &mut state);
 
-        let help = Paragraph::new("[↑↓] Navigate    [Enter] Cook    [Space] Select    [q] Quit");
+        let help = match menu_items.get(selected) {
+            Some(MenuItem::Recipe(recipe_index))
+                if prepare::is_prepared(cache_dir, &recipes[*recipe_index].name) =>
+            {
+                Paragraph::new("[↑↓] Navigate    [Enter] Cook     [Space] Select    [q] Quit")
+            }
+            Some(MenuItem::Recipe(_)) => {
+                Paragraph::new("[↑↓] Navigate    [Enter] Prepare  [Space] Select    [q] Quit")
+            }
+            Some(MenuItem::Patch(_, _)) => {
+                Paragraph::new("[↑↓] Navigate    [Enter] Verify   [Space] Select    [q] Quit")
+            }
+            None => Paragraph::new(""),
+        };
 
         frame.render_widget(help, chunks[1]);
     })?;
