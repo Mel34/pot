@@ -429,7 +429,7 @@ pub fn run(
             frame.render_widget(body, chunks[0]);
 
             frame.render_widget(
-                Paragraph::new("[Esc/q] Return to Cookbook"),
+                Paragraph::new("[Esc] Return to Cookbook    [Ctrl-C] Abort"),
                 chunks[1],
             );
         })?;
@@ -442,7 +442,7 @@ pub fn run(
                     worker_tx.send(crate::worker::WorkerCommand::AbortCook).ok();
                 } else {
                     match key.code {
-                        KeyCode::Esc | KeyCode::Char('q') => return Ok(finished),
+                        KeyCode::Esc => return Ok(finished),
                         _ => {}
                     }
                 }
