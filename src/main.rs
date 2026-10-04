@@ -11,8 +11,8 @@ use std::env;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
-fn run_command(command: &mut Command, verbose: bool) -> bool {
-    if verbose {
+fn run_command(command: &mut Command, log: bool) -> bool {
+    if log {
         command.status().expect("failed to run command").success()
     } else {
         let output = command.output().expect("failed to run command");
@@ -65,7 +65,7 @@ fn main() {
     }
 
     let config = config::load(&config_path);
-    let verbose = config.verbose.unwrap_or(false);
+    let log = config.log.unwrap_or(false);
 
     let package = match env::args().nth(1) {
         Some(package) => package,
@@ -84,7 +84,7 @@ fn main() {
                 }
             };
 
-            if let Err(error) = ui::run(recipes, &paths::cache_dir(), verbose) {
+            if let Err(error) = ui::run(recipes, &paths::cache_dir(), log) {
                 eprintln!("POT interface error: {error}");
                 std::process::exit(1);
             }
@@ -107,7 +107,7 @@ fn main() {
 
     let (selected_package, version) = package::resolve(&package);
 
-    let work_dir = prepare::prepare_sources(&cache_dir, &package, &version, verbose).work_dir;
+    let work_dir = prepare::prepare_sources(&cache_dir, &package, &version, log).work_dir;
 
     println!("Repository: {repository_name}");
     println!("Package:    {selected_package}");
@@ -141,7 +141,7 @@ fn main() {
                 .args(["apply", "-p3"])
                 .arg(&patch)
                 .current_dir(work_dir.join("src").join("nautilus")),
-            verbose,
+            log,
         ) {
             std::process::exit(1);
         }
@@ -161,7 +161,7 @@ fn main() {
 
     if !run_command(
         Command::new("makepkg").args(["-e"]).current_dir(&work_dir),
-        verbose,
+        log,
     ) {
         std::process::exit(1);
     }
@@ -213,7 +213,7 @@ fn main() {
         repo_add.arg(repository_dir.join(package));
     }
 
-    if !run_command(&mut repo_add, verbose) {
+    if !run_command(&mut repo_add, log) {
         std::process::exit(1);
     }
 
@@ -228,7 +228,7 @@ fn main() {
                 .expect("repository config path is not valid UTF-8"),
             "-Sy",
         ]),
-        verbose,
+        log,
     ) {
         std::process::exit(1);
     }

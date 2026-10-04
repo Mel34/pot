@@ -119,7 +119,7 @@ fn draw(
     Ok(())
 }
 
-pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Result<()> {
+pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, log: bool) -> io::Result<()> {
     let (worker_tx, worker_rx) = crate::worker::start();
 
     worker_rx
@@ -243,7 +243,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                                         cache_dir: cache_dir.to_path_buf(),
                                         package: package_name,
                                         version,
-                                        log: verbose,
+                                        log,
                                     })
                                     .map_err(|_| io::Error::other("worker thread exited"))?;
                             }
@@ -276,7 +276,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                                         cache_dir,
                                         &package_name,
                                         &version,
-                                        verbose,
+                                        log,
                                     ).work_dir;
 
                                     let patch_path =

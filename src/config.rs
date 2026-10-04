@@ -5,7 +5,7 @@ use std::path::Path;
 pub struct Config {
     pub cookbook: Option<String>,
     pub repository: Option<String>,
-    pub verbose: Option<bool>,
+    pub log: Option<bool>,
 }
 
 pub fn load(path: &Path) -> Config {
@@ -41,9 +41,9 @@ pub fn load(path: &Path) -> Config {
             "Repository" => {
                 config.repository = Some(value.to_owned());
             }
-            "Verbose" => {
+            "Log" => {
                 if let Ok(value) = value.parse::<bool>() {
-                    config.verbose = Some(value);
+                    config.log = Some(value);
                 }
             }
             _ => {}
@@ -67,7 +67,7 @@ mod tests {
 
 Cookbook = /home/test/cookbook
 Repository = testrepo
-Verbose = true
+Log = true
 ",
         )
         .unwrap();
@@ -76,7 +76,7 @@ Verbose = true
 
         assert_eq!(config.cookbook.as_deref(), Some("/home/test/cookbook"));
         assert_eq!(config.repository.as_deref(), Some("testrepo"));
-        assert_eq!(config.verbose, Some(true));
+        assert_eq!(config.log, Some(true));
 
         fs::remove_file(path).unwrap();
     }
@@ -91,7 +91,7 @@ Verbose = true
 not an option
 Unknown = value
 Cookbook =
-Verbose = banana
+Log = banana
 Repository = valid
 ",
         )
@@ -101,7 +101,7 @@ Repository = valid
 
         assert_eq!(config.cookbook, None);
         assert_eq!(config.repository.as_deref(), Some("valid"));
-        assert_eq!(config.verbose, None);
+        assert_eq!(config.log, None);
 
         fs::remove_file(path).unwrap();
     }
@@ -115,8 +115,8 @@ Repository = valid
             "\
 Repository = first
 Repository = second
-Verbose = false
-Verbose = true
+Log = false
+Log = true
 ",
         )
         .unwrap();
@@ -124,7 +124,7 @@ Verbose = true
         let config = load(&path);
 
         assert_eq!(config.repository.as_deref(), Some("second"));
-        assert_eq!(config.verbose, Some(true));
+        assert_eq!(config.log, Some(true));
 
         fs::remove_file(path).unwrap();
     }
