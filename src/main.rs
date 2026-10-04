@@ -85,7 +85,7 @@ fn main() {
                 }
             };
 
-            if let Err(error) = ui::run(recipes, &paths::cache_dir(), log) {
+            if let Err(error) = ui::run(recipes, &paths::cache_dir(), log, &repository_name) {
                 eprintln!("POT interface error: {error}");
                 std::process::exit(1);
             }

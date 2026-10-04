@@ -12,6 +12,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
@@ -27,6 +28,40 @@ enum MenuItem {
 #[derive(Clone, Copy)]
 enum WorkerStatus {
     Preparing,
+    Resetting,
+}
+
+fn middle_truncate(name: &str, max_width: usize) -> String {
+    let line = Line::raw(name);
+    if line.width() <= max_width {
+        return name.to_owned();
+    }
+
+    if max_width <= 1 {
+        return "…".to_owned();
+    }
+
+    let chars: Vec<char> = name.chars().collect();
+    let mut left = (max_width - 1) / 2;
+    let mut right = max_width - 1 - left;
+
+    loop {
+        let left_part: String = chars.iter().take(left).collect();
+        let right_part: String = chars.iter().rev().take(right).collect::<Vec<_>>().into_iter().rev().collect();
+        let result = format!("{left_part}…{right_part}");
+
+        if Line::raw(&result).width() <= max_width {
+            return result;
+        }
+
+        if right > 0 {
+            right -= 1;
+        } else if left > 0 {
+            left -= 1;
+        } else {
+            return "…".to_owned();
+        }
+    }
 }
 
 fn draw(
@@ -71,16 +106,32 @@ fn draw(
                     };
 
                     let status = match worker_status[*recipe_index] {
-                        Some(WorkerStatus::Preparing) => "  [preparing sources...]",
-                        None if is_prepared => "  [ready to cook]",
+                        Some(WorkerStatus::Preparing) => "[preparing sources...]",
+                        Some(WorkerStatus::Resetting) => "[resetting source...]",
+                        None if is_prepared => "[ready to cook]",
                         None => "",
                     };
 
-                    ListItem::new(format!(
-                        "{marker} {} {ready}  ({}){status}",
-                        recipe.name,
+                    let prefix = format!(
+                        "{marker} {ready}  ({})  ",
                         recipe.patches.len()
-                    ))
+                    );
+                    let content_width = chunks[0].width.saturating_sub(2) as usize;
+                    let status_width = Line::raw(status).width();
+                    let name_width = if status.is_empty() {
+                        content_width.saturating_sub(Line::raw(&prefix).width())
+                    } else {
+                        content_width
+                            .saturating_sub(Line::raw(&prefix).width())
+                            .saturating_sub(status_width)
+                            .saturating_sub(2)
+                    };
+                    let name = middle_truncate(&recipe.name, name_width);
+                    let separator = if status.is_empty() { "" } else { "  " };
+                    ListItem::new(Line::from(vec![
+                        Span::raw(format!("{prefix}{name}{separator}")),
+                        Span::raw(status),
+                    ]))
                 }
 
                 MenuItem::Patch(recipe_index, patch_index) => {
@@ -118,7 +169,9 @@ fn draw(
             Some(MenuItem::Recipe(recipe_index))
                 if prepare::is_prepared(cache_dir, &recipes[*recipe_index].name) =>
             {
-                Paragraph::new("[↑↓] Navigate    [Enter] Cook     [Space] Select    [q] Quit")
+                Paragraph::new(
+                    "[↑↓] Navigate    [Enter] Cook    [r] Reset    [Space] Select    [q] Quit",
+                )
             }
             Some(MenuItem::Recipe(_)) => {
                 Paragraph::new("[↑↓] Navigate    [Enter] Prepare  [Space] Select    [q] Quit")
@@ -135,7 +188,12 @@ fn draw(
     Ok(())
 }
 
-pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, log: bool) -> io::Result<()> {
+pub fn run(
+    mut recipes: Vec<Recipe>,
+    cache_dir: &Path,
+    log: bool,
+    repository_name: &str,
+) -> io::Result<()> {
     let (worker_tx, worker_rx) = crate::worker::start();
 
     worker_rx
@@ -162,6 +220,10 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, log: bool) -> io::Result<
                     worker_status[recipe_index] = Some(WorkerStatus::Preparing);
                 }
 
+                crate::worker::WorkerEvent::Resetting { recipe_index } => {
+                    worker_status[recipe_index] = Some(WorkerStatus::Resetting);
+                }
+
                 crate::worker::WorkerEvent::Prepared {
                     recipe_index,
                     work_dir,
@@ -184,7 +246,8 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, log: bool) -> io::Result<
                 }
 
                 crate::worker::WorkerEvent::Ready
-                | crate::worker::WorkerEvent::Stopped => {}
+                | crate::worker::WorkerEvent::Stopped
+                | crate::worker::WorkerEvent::Cooked { .. } => {}
             }
         }
 
@@ -251,7 +314,15 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, log: bool) -> io::Result<
                                 let recipe = &recipes[*recipe_index];
 
                                 if prepare::is_prepared(cache_dir, &recipe.name) {
-                                    kitchen::run(&mut terminal, recipe)?;
+                                    kitchen::run(
+                                        &mut terminal,
+                                        &worker_tx,
+                                        &worker_rx,
+                                        recipe,
+                                        cache_dir,
+                                        repository_name,
+                                        log,
+                                    )?;
                                 } else {
                                     let (package_name, version) =
                                         package::resolve(&recipe.name);
@@ -318,6 +389,31 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, log: bool) -> io::Result<
                             }
 
                             None => {}
+                        }
+                    }
+
+                    KeyCode::Char('r') => {
+                        if let Some(MenuItem::Recipe(recipe_index)) =
+                            menu_items.get(selected)
+                        {
+                            let recipe = &recipes[*recipe_index];
+
+                            if prepare::is_prepared(cache_dir, &recipe.name) {
+                                let (package_name, version) =
+                                    package::resolve(&recipe.name);
+
+                                worker_tx
+                                    .send(crate::worker::WorkerCommand::Reset {
+                                        recipe_index: *recipe_index,
+                                        cache_dir: cache_dir.to_path_buf(),
+                                        package: package_name,
+                                        version,
+                                        log,
+                                    })
+                                    .map_err(|_| {
+                                        io::Error::other("worker thread exited")
+                                    })?;
+                            }
                         }
                     }
 

@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -13,11 +14,25 @@ pub enum WorkerCommand {
         version: String,
         log: bool,
     },
+    Reset {
+        recipe_index: usize,
+        cache_dir: PathBuf,
+        package: String,
+        version: String,
+        log: bool,
+    },
     Verify {
         recipe_index: usize,
         patch_index: usize,
         patch_path: PathBuf,
         source_dir: PathBuf,
+    },
+    Cook {
+        recipe_name: String,
+        patches: Vec<PathBuf>,
+        cache_dir: PathBuf,
+        repository_name: String,
+        log: bool,
     },
     Shutdown,
 }
@@ -25,6 +40,9 @@ pub enum WorkerCommand {
 pub enum WorkerEvent {
     Ready,
     Preparing {
+        recipe_index: usize,
+    },
+    Resetting {
         recipe_index: usize,
     },
     Prepared {
@@ -38,6 +56,10 @@ pub enum WorkerEvent {
         patch_index: usize,
         status: PatchStatus,
     },
+    Cooked {
+        output: String,
+        success: bool,
+    },
     Stopped,
 }
 
@@ -47,6 +69,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
 
     let (prepare_tx, prepare_rx) = mpsc::channel();
     let (verify_tx, verify_rx) = mpsc::channel();
+    let (cook_tx, cook_rx) = mpsc::channel();
 
     {
         let event_tx = event_tx.clone();
@@ -83,9 +106,46 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             .ok();
                     }
 
+                    WorkerCommand::Reset {
+                        recipe_index,
+                        cache_dir,
+                        package,
+                        version,
+                        log,
+                    } => {
+                        event_tx
+                            .send(WorkerEvent::Resetting { recipe_index })
+                            .ok();
+
+                        let work_dir = cache_dir.join("work").join(&package);
+
+                        if work_dir.exists() {
+                            fs::remove_dir_all(&work_dir)
+                                .expect("failed to reset POT source tree");
+                        }
+
+                        let result =
+                            crate::prepare::prepare_sources(
+                                &cache_dir,
+                                &package,
+                                &version,
+                                log,
+                            );
+
+                        event_tx
+                            .send(WorkerEvent::Prepared {
+                                recipe_index,
+                                work_dir: result.work_dir,
+                                output: result.output,
+                                success: result.success,
+                            })
+                            .ok();
+                    }
+
                     WorkerCommand::Shutdown => break,
 
-                    WorkerCommand::Verify { .. } => {}
+                    WorkerCommand::Verify { .. }
+                    | WorkerCommand::Cook { .. } => {}
                 }
             }
         });
@@ -136,7 +196,45 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
 
                     WorkerCommand::Shutdown => break,
 
-                    WorkerCommand::Prepare { .. } => {}
+                    WorkerCommand::Prepare { .. }
+                    | WorkerCommand::Reset { .. }
+                    | WorkerCommand::Cook { .. } => {}
+                }
+            }
+        });
+    }
+
+    {
+        let event_tx = event_tx.clone();
+
+        thread::spawn(move || {
+            while let Ok(command) = cook_rx.recv() {
+                match command {
+                    WorkerCommand::Cook {
+                        recipe_name,
+                        patches,
+                        cache_dir,
+                        repository_name,
+                        log,
+                    } => {
+                        let (output, success) = crate::kitchen::cook(
+                            &recipe_name,
+                            &patches,
+                            &cache_dir,
+                            &repository_name,
+                            log,
+                        );
+
+                        event_tx
+                            .send(WorkerEvent::Cooked { output, success })
+                            .ok();
+                    }
+
+                    WorkerCommand::Shutdown => break,
+
+                    WorkerCommand::Prepare { .. }
+                    | WorkerCommand::Reset { .. }
+                    | WorkerCommand::Verify { .. } => {}
                 }
             }
         });
@@ -145,6 +243,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
     {
         let prepare_tx = prepare_tx.clone();
         let verify_tx = verify_tx.clone();
+        let cook_tx = cook_tx.clone();
         let event_tx = event_tx.clone();
 
         thread::spawn(move || {
@@ -156,13 +255,22 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                         prepare_tx.send(command).ok();
                     }
 
+                    WorkerCommand::Reset { .. } => {
+                        prepare_tx.send(command).ok();
+                    }
+
                     WorkerCommand::Verify { .. } => {
                         verify_tx.send(command).ok();
+                    }
+
+                    WorkerCommand::Cook { .. } => {
+                        cook_tx.send(command).ok();
                     }
 
                     WorkerCommand::Shutdown => {
                         prepare_tx.send(WorkerCommand::Shutdown).ok();
                         verify_tx.send(WorkerCommand::Shutdown).ok();
+                        cook_tx.send(WorkerCommand::Shutdown).ok();
 
                         event_tx.send(WorkerEvent::Stopped).ok();
 
