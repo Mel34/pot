@@ -43,6 +43,38 @@ pub enum WorkerCommand {
     Shutdown,
 }
 
+enum WorkerJob {
+    Prepare {
+        recipe_index: usize,
+        cache_dir: PathBuf,
+        package: String,
+        version: String,
+        log: bool,
+    },
+    Reset {
+        recipe_index: usize,
+        cache_dir: PathBuf,
+        package: String,
+        version: String,
+        log: bool,
+    },
+    Verify {
+        recipe_index: usize,
+        patch_index: usize,
+        patch_path: PathBuf,
+        source_dir: PathBuf,
+    },
+    Cook {
+        recipe_index: usize,
+        recipe_name: String,
+        patches: Vec<PathBuf>,
+        cache_dir: PathBuf,
+        repository_name: String,
+        log: bool,
+    },
+    Shutdown,
+}
+
 pub enum WorkerEvent {
     Ready,
     Preparing {
@@ -82,9 +114,9 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
     let (event_tx, event_rx) = mpsc::channel();
     let cook_abort = Arc::new(AtomicBool::new(false));
 
-    let (prepare_tx, prepare_rx) = mpsc::channel();
-    let (verify_tx, verify_rx) = mpsc::channel();
-    let (cook_tx, cook_rx) = mpsc::channel();
+    let (prepare_tx, prepare_rx): (Sender<WorkerJob>, Receiver<WorkerJob>) = mpsc::channel();
+    let (verify_tx, verify_rx): (Sender<WorkerJob>, Receiver<WorkerJob>) = mpsc::channel();
+    let (cook_tx, cook_rx): (Sender<WorkerJob>, Receiver<WorkerJob>) = mpsc::channel();
 
     {
         let event_tx = event_tx.clone();
@@ -92,7 +124,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
         thread::spawn(move || {
             while let Ok(command) = prepare_rx.recv() {
                 match command {
-                    WorkerCommand::Prepare {
+                    WorkerJob::Prepare {
                         recipe_index,
                         cache_dir,
                         package,
@@ -120,7 +152,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             .ok();
                     }
 
-                    WorkerCommand::Reset {
+                    WorkerJob::Reset {
                         recipe_index,
                         cache_dir,
                         package,
@@ -155,11 +187,11 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             .ok();
                     }
 
-                    WorkerCommand::Shutdown => break,
+                    WorkerJob::Shutdown => break,
 
-                    WorkerCommand::Verify { .. }
-                    | WorkerCommand::Cook { .. }
-                    | WorkerCommand::AbortCook => {}
+                    WorkerJob::Verify { .. }
+                    | WorkerJob::Cook { .. } => {}
+
                 }
             }
         });
@@ -171,7 +203,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
         thread::spawn(move || {
             while let Ok(command) = verify_rx.recv() {
                 match command {
-                    WorkerCommand::Verify {
+                    WorkerJob::Verify {
                         recipe_index,
                         patch_index,
                         patch_path,
@@ -208,12 +240,12 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             .ok();
                     }
 
-                    WorkerCommand::Shutdown => break,
+                    WorkerJob::Shutdown => break,
 
-                    WorkerCommand::Prepare { .. }
-                    | WorkerCommand::Reset { .. }
-                    | WorkerCommand::Cook { .. }
-                    | WorkerCommand::AbortCook => {}
+                    WorkerJob::Prepare { .. }
+                    | WorkerJob::Reset { .. }
+                    | WorkerJob::Cook { .. } => {}
+
                 }
             }
         });
@@ -226,7 +258,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
         thread::spawn(move || {
             while let Ok(command) = cook_rx.recv() {
                 match command {
-                    WorkerCommand::Cook {
+                    WorkerJob::Cook {
                         recipe_index,
                         recipe_name,
                         patches,
@@ -254,12 +286,12 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             .ok();
                     }
 
-                    WorkerCommand::Shutdown => break,
+                    WorkerJob::Shutdown => break,
 
-                    WorkerCommand::Prepare { .. }
-                    | WorkerCommand::Reset { .. }
-                    | WorkerCommand::Verify { .. }
-                    | WorkerCommand::AbortCook => {}
+                    WorkerJob::Prepare { .. }
+                    | WorkerJob::Reset { .. }
+                    | WorkerJob::Verify { .. } => {}
+
                 }
             }
         });
@@ -277,21 +309,78 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
 
             while let Ok(command) = command_rx.recv() {
                 match command {
-                    WorkerCommand::Prepare { .. } => {
-                        prepare_tx.send(command).ok();
+                    WorkerCommand::Prepare {
+                        recipe_index,
+                        cache_dir,
+                        package,
+                        version,
+                        log,
+                    } => {
+                        prepare_tx
+                            .send(WorkerJob::Prepare {
+                                recipe_index,
+                                cache_dir,
+                                package,
+                                version,
+                                log,
+                            })
+                            .ok();
                     }
 
-                    WorkerCommand::Reset { .. } => {
-                        prepare_tx.send(command).ok();
+                    WorkerCommand::Reset {
+                        recipe_index,
+                        cache_dir,
+                        package,
+                        version,
+                        log,
+                    } => {
+                        prepare_tx
+                            .send(WorkerJob::Reset {
+                                recipe_index,
+                                cache_dir,
+                                package,
+                                version,
+                                log,
+                            })
+                            .ok();
                     }
 
-                    WorkerCommand::Verify { .. } => {
-                        verify_tx.send(command).ok();
+                    WorkerCommand::Verify {
+                        recipe_index,
+                        patch_index,
+                        patch_path,
+                        source_dir,
+                    } => {
+                        verify_tx
+                            .send(WorkerJob::Verify {
+                                recipe_index,
+                                patch_index,
+                                patch_path,
+                                source_dir,
+                            })
+                            .ok();
                     }
 
-                    WorkerCommand::Cook { .. } => {
+                    WorkerCommand::Cook {
+                        recipe_index,
+                        recipe_name,
+                        patches,
+                        cache_dir,
+                        repository_name,
+                        log,
+                    } => {
                         cook_abort.store(false, Ordering::Relaxed);
-                        cook_tx.send(command).ok();
+
+                        cook_tx
+                            .send(WorkerJob::Cook {
+                                recipe_index,
+                                recipe_name,
+                                patches,
+                                cache_dir,
+                                repository_name,
+                                log,
+                            })
+                            .ok();
                     }
 
                     WorkerCommand::AbortCook => {
@@ -299,9 +388,9 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                     }
 
                     WorkerCommand::Shutdown => {
-                        prepare_tx.send(WorkerCommand::Shutdown).ok();
-                        verify_tx.send(WorkerCommand::Shutdown).ok();
-                        cook_tx.send(WorkerCommand::Shutdown).ok();
+                        prepare_tx.send(WorkerJob::Shutdown).ok();
+                        verify_tx.send(WorkerJob::Shutdown).ok();
+                        cook_tx.send(WorkerJob::Shutdown).ok();
 
                         event_tx.send(WorkerEvent::Stopped).ok();
 
