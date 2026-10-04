@@ -316,19 +316,24 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                 recipe_index: usize,
             }
 
-            struct PendingVerify {
+            struct PendingPrepare {
                 recipe_index: usize,
-                patch_index: usize,
-                patch_path: PathBuf,
                 cache_dir: PathBuf,
                 package: String,
                 version: String,
                 log: bool,
             }
 
+            struct PendingVerify {
+                recipe_index: usize,
+                patch_index: usize,
+                patch_path: PathBuf,
+            }
+
+            let mut pending_prepares: VecDeque<PendingPrepare> = VecDeque::new();
             let mut pending_verifies: VecDeque<PendingVerify> = VecDeque::new();
 
-let mut active_prepare: Option<ActivePrepare> = None;
+            let mut active_prepare: Option<ActivePrepare> = None;
 
             loop {
                 while let Ok(event) = worker_event_rx.try_recv() {
@@ -369,7 +374,7 @@ let mut active_prepare: Option<ActivePrepare> = None;
 
                             pending_verifies = remaining;
 
-                            if let Some(pending) = pending_verifies.pop_front() {
+                            if let Some(pending) = pending_prepares.pop_front() {
                                 active_prepare = Some(ActivePrepare {
                                     recipe_index: pending.recipe_index,
                                 });
@@ -377,22 +382,12 @@ let mut active_prepare: Option<ActivePrepare> = None;
                                 prepare_tx
                                     .send(WorkerJob::Prepare {
                                         recipe_index: pending.recipe_index,
-                                        cache_dir: pending.cache_dir.clone(),
-                                        package: pending.package.clone(),
-                                        version: pending.version.clone(),
+                                        cache_dir: pending.cache_dir,
+                                        package: pending.package,
+                                        version: pending.version,
                                         log: pending.log,
                                     })
                                     .ok();
-
-                                pending_verifies.push_front(PendingVerify {
-                                    recipe_index: pending.recipe_index,
-                                    patch_index: pending.patch_index,
-                                    patch_path: pending.patch_path,
-                                    cache_dir: pending.cache_dir,
-                                    package: pending.package,
-                                    version: pending.version,
-                                    log: pending.log,
-                                });
                             }
                         }
                     }
@@ -464,11 +459,26 @@ let mut active_prepare: Option<ActivePrepare> = None;
                                     recipe_index,
                                     patch_index,
                                     patch_path,
-                                    cache_dir,
-                                    package,
-                                    version,
-                                    log,
                                 });
+
+                                let prepare_queued = pending_prepares
+                                    .iter()
+                                    .any(|pending| pending.recipe_index == recipe_index);
+
+                                if active_prepare
+                                    .as_ref()
+                                    .map(|active| active.recipe_index == recipe_index)
+                                    .unwrap_or(false)
+                                {
+                                } else if !prepare_queued {
+                                    pending_prepares.push_back(PendingPrepare {
+                                        recipe_index,
+                                        cache_dir,
+                                        package,
+                                        version,
+                                        log,
+                                    });
+                                }
                             } else if crate::prepare::is_prepared(&cache_dir, &package) {
                                 verify_tx
                                     .send(WorkerJob::Verify {
@@ -483,10 +493,6 @@ let mut active_prepare: Option<ActivePrepare> = None;
                                     recipe_index,
                                     patch_index,
                                     patch_path,
-                                    cache_dir: cache_dir.clone(),
-                                    package: package.clone(),
-                                    version: version.clone(),
-                                    log,
                                 });
 
                                 active_prepare = Some(ActivePrepare {
