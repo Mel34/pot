@@ -16,7 +16,7 @@ use ratatui::{
 };
 
 use crate::cookbook::{PatchStatus, Recipe};
-use crate::{package, prepare};
+use crate::{kitchen, package, prepare};
 
 #[derive(Clone, Copy)]
 enum MenuItem {
@@ -248,20 +248,26 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, log: bool) -> io::Result<
                     KeyCode::Enter => {
                         match menu_items.get(selected) {
                             Some(MenuItem::Recipe(recipe_index)) => {
-                                let (package_name, version) = {
-                                    let recipe = &recipes[*recipe_index];
-                                    package::resolve(&recipe.name)
-                                };
+                                let recipe = &recipes[*recipe_index];
 
-                                worker_tx
-                                    .send(crate::worker::WorkerCommand::Prepare {
-                                        recipe_index: *recipe_index,
-                                        cache_dir: cache_dir.to_path_buf(),
-                                        package: package_name,
-                                        version,
-                                        log,
-                                    })
-                                    .map_err(|_| io::Error::other("worker thread exited"))?;
+                                if prepare::is_prepared(cache_dir, &recipe.name) {
+                                    kitchen::run(&mut terminal, recipe)?;
+                                } else {
+                                    let (package_name, version) =
+                                        package::resolve(&recipe.name);
+
+                                    worker_tx
+                                        .send(crate::worker::WorkerCommand::Prepare {
+                                            recipe_index: *recipe_index,
+                                            cache_dir: cache_dir.to_path_buf(),
+                                            package: package_name,
+                                            version,
+                                            log,
+                                        })
+                                        .map_err(|_| {
+                                            io::Error::other("worker thread exited")
+                                        })?;
+                                }
                             }
 
                             Some(MenuItem::Patch(recipe_index, patch_index)) => {

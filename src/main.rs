@@ -1,5 +1,6 @@
 mod config;
 mod cookbook;
+mod kitchen;
 mod paths;
 mod package;
 mod prepare;
