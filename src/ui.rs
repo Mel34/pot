@@ -339,7 +339,6 @@ pub fn run(
                 crate::worker::WorkerEvent::Prepared {
                     recipe_index,
                     work_dir,
-                    output: _,
                     success,
                 } => {
                     worker_status[recipe_index] = None;
@@ -359,8 +358,8 @@ pub fn run(
 
                 crate::worker::WorkerEvent::Cooked {
                     recipe_index,
-                    output: _,
                     success,
+                    output: _,
                 } => {
                     worker_status[recipe_index] = None;
                     cook_status[recipe_index] = Some(if success {

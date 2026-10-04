@@ -54,7 +54,6 @@ pub enum WorkerEvent {
     Prepared {
         recipe_index: usize,
         work_dir: PathBuf,
-        output: String,
         success: bool,
     },
     Verified {
@@ -116,7 +115,6 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             .send(WorkerEvent::Prepared {
                                 recipe_index,
                                 work_dir: result.work_dir,
-                                output: result.output,
                                 success: result.success,
                             })
                             .ok();
@@ -152,7 +150,6 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                             .send(WorkerEvent::Prepared {
                                 recipe_index,
                                 work_dir: result.work_dir,
-                                output: result.output,
                                 success: result.success,
                             })
                             .ok();
