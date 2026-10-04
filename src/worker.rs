@@ -312,7 +312,9 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
         thread::spawn(move || {
             event_tx.send(WorkerEvent::Ready).ok();
 
-            struct ActivePrepare;
+            struct ActivePrepare {
+                recipe_index: usize,
+            }
 
             struct PendingVerify {
                 recipe_index: usize,
@@ -336,7 +338,15 @@ let mut active_prepare: Option<ActivePrepare> = None;
                         success,
                     } = &event
                     {
-                        active_prepare = None;
+                        let active = active_prepare
+                            .take()
+                            .expect("prepared event without active preparation");
+
+                        assert_eq!(
+                            active.recipe_index,
+                            *recipe_index,
+                            "prepared event does not match active preparation",
+                        );
 
                         if *success {
                             let source_dir = work_dir.join("src");
@@ -358,6 +368,32 @@ let mut active_prepare: Option<ActivePrepare> = None;
                             }
 
                             pending_verifies = remaining;
+
+                            if let Some(pending) = pending_verifies.pop_front() {
+                                active_prepare = Some(ActivePrepare {
+                                    recipe_index: pending.recipe_index,
+                                });
+
+                                prepare_tx
+                                    .send(WorkerJob::Prepare {
+                                        recipe_index: pending.recipe_index,
+                                        cache_dir: pending.cache_dir.clone(),
+                                        package: pending.package.clone(),
+                                        version: pending.version.clone(),
+                                        log: pending.log,
+                                    })
+                                    .ok();
+
+                                pending_verifies.push_front(PendingVerify {
+                                    recipe_index: pending.recipe_index,
+                                    patch_index: pending.patch_index,
+                                    patch_path: pending.patch_path,
+                                    cache_dir: pending.cache_dir,
+                                    package: pending.package,
+                                    version: pending.version,
+                                    log: pending.log,
+                                });
+                            }
                         }
                     }
 
@@ -374,7 +410,9 @@ let mut active_prepare: Option<ActivePrepare> = None;
                             log,
                         } => {
                             if active_prepare.is_none() {
-                                active_prepare = Some(ActivePrepare);
+                                active_prepare = Some(ActivePrepare {
+                                    recipe_index,
+                                });
 
                                 prepare_tx
                                     .send(WorkerJob::Prepare {
@@ -396,7 +434,9 @@ let mut active_prepare: Option<ActivePrepare> = None;
                             log,
                         } => {
                             if active_prepare.is_none() {
-                                active_prepare = Some(ActivePrepare);
+                                active_prepare = Some(ActivePrepare {
+                                    recipe_index,
+                                });
 
                                 prepare_tx
                                     .send(WorkerJob::Reset {
@@ -449,7 +489,9 @@ let mut active_prepare: Option<ActivePrepare> = None;
                                     log,
                                 });
 
-                                active_prepare = Some(ActivePrepare);
+                                active_prepare = Some(ActivePrepare {
+                                    recipe_index,
+                                });
 
                                 prepare_tx
                                     .send(WorkerJob::Prepare {
