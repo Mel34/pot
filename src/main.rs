@@ -5,6 +5,7 @@ mod package;
 mod prepare;
 mod repository;
 mod ui;
+mod worker;
 
 use std::env;
 use std::os::unix::fs::PermissionsExt;
@@ -106,7 +107,7 @@ fn main() {
 
     let (selected_package, version) = package::resolve(&package);
 
-    let work_dir = prepare::prepare_sources(&cache_dir, &package, &version, verbose);
+    let work_dir = prepare::prepare_sources(&cache_dir, &package, &version, verbose).work_dir;
 
     println!("Repository: {repository_name}");
     println!("Package:    {selected_package}");

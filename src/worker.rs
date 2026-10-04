@@ -11,7 +11,7 @@ pub enum WorkerCommand {
         cache_dir: PathBuf,
         package: String,
         version: String,
-        verbose: bool,
+        log: bool,
     },
     Verify {
         recipe_index: usize,
@@ -30,6 +30,8 @@ pub enum WorkerEvent {
     Prepared {
         recipe_index: usize,
         work_dir: PathBuf,
+        output: String,
+        success: bool,
     },
     Verified {
         recipe_index: usize,
@@ -57,24 +59,26 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                         cache_dir,
                         package,
                         version,
-                        verbose,
+                        log,
                     } => {
                         event_tx
                             .send(WorkerEvent::Preparing { recipe_index })
                             .ok();
 
-                        let work_dir =
+                        let result =
                             crate::prepare::prepare_sources(
                                 &cache_dir,
                                 &package,
                                 &version,
-                                verbose,
+                                log,
                             );
 
                         event_tx
                             .send(WorkerEvent::Prepared {
                                 recipe_index,
-                                work_dir,
+                                work_dir: result.work_dir,
+                                output: result.output,
+                                success: result.success,
                             })
                             .ok();
                     }

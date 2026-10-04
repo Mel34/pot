@@ -149,9 +149,14 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                 crate::worker::WorkerEvent::Prepared {
                     recipe_index,
                     work_dir,
+                    output: _,
+                    success,
                 } => {
                     worker_status[recipe_index] = None;
-                    recipes[recipe_index].check_patches(&work_dir.join("src"));
+
+                    if success {
+                        recipes[recipe_index].check_patches(&work_dir.join("src"));
+                    }
                 }
 
                 crate::worker::WorkerEvent::Verified {
@@ -238,7 +243,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                                         cache_dir: cache_dir.to_path_buf(),
                                         package: package_name,
                                         version,
-                                        verbose,
+                                        log: verbose,
                                     })
                                     .map_err(|_| io::Error::other("worker thread exited"))?;
                             }
@@ -272,7 +277,7 @@ pub fn run(mut recipes: Vec<Recipe>, cache_dir: &Path, verbose: bool) -> io::Res
                                         &package_name,
                                         &version,
                                         verbose,
-                                    );
+                                    ).work_dir;
 
                                     let patch_path =
                                         recipe.patches[*patch_index].path.clone();
