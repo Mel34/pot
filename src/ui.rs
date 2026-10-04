@@ -232,7 +232,7 @@ fn draw(
     Ok(())
 }
 
-pub fn first_start() -> io::Result<()> {
+pub fn first_start(hostname: &str) -> io::Result<bool> {
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
@@ -262,15 +262,15 @@ pub fn first_start() -> io::Result<()> {
                 ])
                 .split(inner);
 
-            let title = Paragraph::new("Welcome to POT")
+            let title = Paragraph::new("Existing Local Repository Found")
                 .style(Style::default().add_modifier(Modifier::BOLD));
 
-            let message = Paragraph::new(
-                "POT needs to be configured before it can open the Cookbook.\n\
-                 This setup will configure the local pacman repository used by POT.",
-            );
+            let message = Paragraph::new(format!(
+                "POT found an existing local pacman repository named '{hostname}'.
+                 Would you like POT to adopt this repository?",
+            ));
 
-            let help = Paragraph::new("[Enter] Continue    [Esc] Quit");
+            let help = Paragraph::new("[Enter] Adopt    [Esc] Quit");
 
             frame.render_widget(title, chunks[0]);
             frame.render_widget(message, chunks[1]);
@@ -280,24 +280,23 @@ pub fn first_start() -> io::Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Enter => break,
+                    KeyCode::Enter => {
+                        disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                        terminal.show_cursor()?;
+                        return Ok(true);
+                    }
                     KeyCode::Esc => {
                         disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         terminal.show_cursor()?;
-                        return Ok(());
+                        return Ok(false);
                     }
                     _ => {}
                 }
             }
         }
     }
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    Ok(())
 }
 
 pub fn run(

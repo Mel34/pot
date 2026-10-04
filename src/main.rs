@@ -31,19 +31,60 @@ fn run_command(command: &mut Command, log: bool) -> bool {
 fn main() {
     let config_path = paths::config_path();
 
-    let config = config::load(&config_path);
+    let mut config = config::load(&config_path);
     let log = config.log.unwrap_or(false);
 
     let package = match env::args().nth(1) {
         Some(package) => package,
         None => {
             if !config_path.exists() {
-                if let Err(error) = ui::first_start() {
-                    eprintln!("POT interface error: {error}");
-                    std::process::exit(1);
+                let hostname = repository::name();
+
+                match ui::first_start(&hostname) {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(error) => {
+                        eprintln!("POT interface error: {error}");
+                        std::process::exit(1);
+                    }
                 }
 
-                return;
+                repository::ensure(&hostname);
+
+                if let Some(parent) = config_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .expect("failed to create POT configuration directory");
+                }
+
+                std::fs::write(
+                    &config_path,
+                    format!(
+                        r#"################################################
+# POT configuration                            #
+# Uncomment an option to override the default. #
+#                                              #
+# Defaults shown below are used when options   #
+# are commented out. The default repository    #
+# name is the machine's hostname.              #
+################################################
+
+# Path to the cookbook.
+# Default: ~/Projects/cookbook
+# Cookbook = ~/Projects/cookbook
+
+# Name of the local pacman repository.
+# Default: {hostname}
+# Repository = {hostname}
+
+# Interface verbosity.
+# Default: false
+# Log = false
+"#,
+                    ),
+                )
+                .expect("failed to create POT configuration file");
+
+                config = config::load(&config_path);
             }
 
             let repository_name = config.repository.clone().unwrap_or_else(repository::name);
