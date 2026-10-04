@@ -111,6 +111,7 @@ pub fn find_source_dir(srcdir: &Path, patch: &Path) -> Option<PathBuf> {
     }
 
     let candidates = candidates(srcdir).ok()?;
+    let mut fallback = None;
 
     for candidate in candidates {
         for patch_path in &patch_paths {
@@ -120,13 +121,19 @@ pub fn find_source_dir(srcdir: &Path, patch: &Path) -> Option<PathBuf> {
                 let suffix = components[index..].iter().collect::<PathBuf>();
 
                 if candidate.join(&suffix).exists() {
-                    return Some(candidate);
+                    if candidate.join(".git").exists() {
+                        return Some(candidate);
+                    }
+
+                    if fallback.is_none() {
+                        fallback = Some(candidate.clone());
+                    }
                 }
             }
         }
     }
 
-    None
+    fallback
 }
 
 impl Patch {

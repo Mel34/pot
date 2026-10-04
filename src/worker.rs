@@ -354,7 +354,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                         );
 
                         if *success {
-                            let source_dir = work_dir.join("src");
+                            let source_dir = work_dir.clone();
                             let mut remaining = VecDeque::new();
 
                             while let Some(pending) = pending_verifies.pop_front() {
@@ -485,7 +485,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                                         recipe_index,
                                         patch_index,
                                         patch_path,
-                                        source_dir: cache_dir.join("work").join(&package).join("src"),
+                                        source_dir: cache_dir.join("work").join(&package),
                                     })
                                     .ok();
                             } else {
