@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{
     Arc,
@@ -29,7 +30,10 @@ pub enum WorkerCommand {
         recipe_index: usize,
         patch_index: usize,
         patch_path: PathBuf,
-        source_dir: PathBuf,
+        cache_dir: PathBuf,
+        package: String,
+        version: String,
+        log: bool,
     },
     Cook {
         recipe_index: usize,
@@ -112,6 +116,7 @@ pub enum WorkerEvent {
 pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
     let (command_tx, command_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
+    let (worker_event_tx, worker_event_rx) = mpsc::channel();
     let cook_abort = Arc::new(AtomicBool::new(false));
 
     let (prepare_tx, prepare_rx): (Sender<WorkerJob>, Receiver<WorkerJob>) = mpsc::channel();
@@ -119,7 +124,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
     let (cook_tx, cook_rx): (Sender<WorkerJob>, Receiver<WorkerJob>) = mpsc::channel();
 
     {
-        let event_tx = event_tx.clone();
+        let event_tx = worker_event_tx.clone();
 
         thread::spawn(move || {
             while let Ok(command) = prepare_rx.recv() {
@@ -198,7 +203,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
     }
 
     {
-        let event_tx = event_tx.clone();
+        let event_tx = worker_event_tx.clone();
 
         thread::spawn(move || {
             while let Ok(command) = verify_rx.recv() {
@@ -252,7 +257,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
     }
 
     {
-        let event_tx = event_tx.clone();
+        let event_tx = worker_event_tx.clone();
         let cook_abort = cook_abort.clone();
 
         thread::spawn(move || {
@@ -307,95 +312,195 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
         thread::spawn(move || {
             event_tx.send(WorkerEvent::Ready).ok();
 
-            while let Ok(command) = command_rx.recv() {
-                match command {
-                    WorkerCommand::Prepare {
+            struct ActivePrepare;
+
+            struct PendingVerify {
+                recipe_index: usize,
+                patch_index: usize,
+                patch_path: PathBuf,
+                cache_dir: PathBuf,
+                package: String,
+                version: String,
+                log: bool,
+            }
+
+            let mut pending_verifies: VecDeque<PendingVerify> = VecDeque::new();
+
+let mut active_prepare: Option<ActivePrepare> = None;
+
+            loop {
+                while let Ok(event) = worker_event_rx.try_recv() {
+                    if let WorkerEvent::Prepared {
                         recipe_index,
-                        cache_dir,
-                        package,
-                        version,
-                        log,
-                    } => {
-                        prepare_tx
-                            .send(WorkerJob::Prepare {
-                                recipe_index,
-                                cache_dir,
-                                package,
-                                version,
-                                log,
-                            })
-                            .ok();
+                        work_dir,
+                        success,
+                    } = &event
+                    {
+                        active_prepare = None;
+
+                        if *success {
+                            let source_dir = work_dir.join("src");
+                            let mut remaining = VecDeque::new();
+
+                            while let Some(pending) = pending_verifies.pop_front() {
+                                if pending.recipe_index == *recipe_index {
+                                    verify_tx
+                                        .send(WorkerJob::Verify {
+                                            recipe_index: pending.recipe_index,
+                                            patch_index: pending.patch_index,
+                                            patch_path: pending.patch_path,
+                                            source_dir: source_dir.clone(),
+                                        })
+                                        .ok();
+                                } else {
+                                    remaining.push_back(pending);
+                                }
+                            }
+
+                            pending_verifies = remaining;
+                        }
                     }
 
-                    WorkerCommand::Reset {
-                        recipe_index,
-                        cache_dir,
-                        package,
-                        version,
-                        log,
-                    } => {
-                        prepare_tx
-                            .send(WorkerJob::Reset {
-                                recipe_index,
-                                cache_dir,
-                                package,
-                                version,
-                                log,
-                            })
-                            .ok();
-                    }
+                    event_tx.send(event).ok();
+                }
 
-                    WorkerCommand::Verify {
-                        recipe_index,
-                        patch_index,
-                        patch_path,
-                        source_dir,
-                    } => {
-                        verify_tx
-                            .send(WorkerJob::Verify {
-                                recipe_index,
-                                patch_index,
-                                patch_path,
-                                source_dir,
-                            })
-                            .ok();
-                    }
+                match command_rx.recv_timeout(std::time::Duration::from_millis(10)) {
+                    Ok(command) => match command {
+                        WorkerCommand::Prepare {
+                            recipe_index,
+                            cache_dir,
+                            package,
+                            version,
+                            log,
+                        } => {
+                            if active_prepare.is_none() {
+                                active_prepare = Some(ActivePrepare);
 
-                    WorkerCommand::Cook {
-                        recipe_index,
-                        recipe_name,
-                        patches,
-                        cache_dir,
-                        repository_name,
-                        log,
-                    } => {
-                        cook_abort.store(false, Ordering::Relaxed);
+                                prepare_tx
+                                    .send(WorkerJob::Prepare {
+                                        recipe_index,
+                                        cache_dir,
+                                        package,
+                                        version,
+                                        log,
+                                    })
+                                    .ok();
+                            }
+                        }
 
-                        cook_tx
-                            .send(WorkerJob::Cook {
-                                recipe_index,
-                                recipe_name,
-                                patches,
-                                cache_dir,
-                                repository_name,
-                                log,
-                            })
-                            .ok();
-                    }
+                        WorkerCommand::Reset {
+                            recipe_index,
+                            cache_dir,
+                            package,
+                            version,
+                            log,
+                        } => {
+                            if active_prepare.is_none() {
+                                active_prepare = Some(ActivePrepare);
 
-                    WorkerCommand::AbortCook => {
-                        cook_abort.store(true, Ordering::Relaxed);
-                    }
+                                prepare_tx
+                                    .send(WorkerJob::Reset {
+                                        recipe_index,
+                                        cache_dir,
+                                        package,
+                                        version,
+                                        log,
+                                    })
+                                    .ok();
+                            }
+                        }
 
-                    WorkerCommand::Shutdown => {
-                        prepare_tx.send(WorkerJob::Shutdown).ok();
-                        verify_tx.send(WorkerJob::Shutdown).ok();
-                        cook_tx.send(WorkerJob::Shutdown).ok();
+                        WorkerCommand::Verify {
+                            recipe_index,
+                            patch_index,
+                            patch_path,
+                            cache_dir,
+                            package,
+                            version,
+                            log,
+                        } => {
+                            if active_prepare.is_some() {
+                                pending_verifies.push_back(PendingVerify {
+                                    recipe_index,
+                                    patch_index,
+                                    patch_path,
+                                    cache_dir,
+                                    package,
+                                    version,
+                                    log,
+                                });
+                            } else if crate::prepare::is_prepared(&cache_dir, &package) {
+                                verify_tx
+                                    .send(WorkerJob::Verify {
+                                        recipe_index,
+                                        patch_index,
+                                        patch_path,
+                                        source_dir: cache_dir.join("work").join(&package).join("src"),
+                                    })
+                                    .ok();
+                            } else {
+                                pending_verifies.push_back(PendingVerify {
+                                    recipe_index,
+                                    patch_index,
+                                    patch_path,
+                                    cache_dir: cache_dir.clone(),
+                                    package: package.clone(),
+                                    version: version.clone(),
+                                    log,
+                                });
 
-                        event_tx.send(WorkerEvent::Stopped).ok();
+                                active_prepare = Some(ActivePrepare);
 
-                        break;
-                    }
+                                prepare_tx
+                                    .send(WorkerJob::Prepare {
+                                        recipe_index,
+                                        cache_dir,
+                                        package,
+                                        version,
+                                        log,
+                                    })
+                                    .ok();
+                            }
+                        }
+
+                        WorkerCommand::Cook {
+                            recipe_index,
+                            recipe_name,
+                            patches,
+                            cache_dir,
+                            repository_name,
+                            log,
+                        } => {
+                            cook_abort.store(false, Ordering::Relaxed);
+
+                            cook_tx
+                                .send(WorkerJob::Cook {
+                                    recipe_index,
+                                    recipe_name,
+                                    patches,
+                                    cache_dir,
+                                    repository_name,
+                                    log,
+                                })
+                                .ok();
+                        }
+
+                        WorkerCommand::AbortCook => {
+                            cook_abort.store(true, Ordering::Relaxed);
+                        }
+
+                        WorkerCommand::Shutdown => {
+                            prepare_tx.send(WorkerJob::Shutdown).ok();
+                            verify_tx.send(WorkerJob::Shutdown).ok();
+                            cook_tx.send(WorkerJob::Shutdown).ok();
+                            event_tx.send(WorkerEvent::Stopped).ok();
+                            break;
+                        }
+                    },
+
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
         });

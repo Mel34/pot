@@ -520,49 +520,24 @@ pub fn run(
 
                             Some(MenuItem::Patch(recipe_index, patch_index)) => {
                                 let recipe = &recipes[*recipe_index];
+                                let (package_name, version) =
+                                    package::resolve(&recipe.name);
+                                let patch_path =
+                                    recipe.patches[*patch_index].path.clone();
 
-                                if prepare::is_prepared(cache_dir, &recipe.name) {
-                                    let patch_path =
-                                        recipe.patches[*patch_index].path.clone();
-
-                                    let source_dir =
-                                        cache_dir.join("work").join(&recipe.name).join("src");
-
-                                    worker_tx
-                                        .send(crate::worker::WorkerCommand::Verify {
-                                            recipe_index: *recipe_index,
-                                            patch_index: *patch_index,
-                                            patch_path,
-                                            source_dir,
-                                        })
-                                        .map_err(|_| {
-                                            io::Error::other("worker thread exited")
-                                        })?;
-                                } else {
-                                    let (package_name, version) =
-                                        package::resolve(&recipe.name);
-
-                                    let work_dir = prepare::prepare_sources(
-                                        cache_dir,
-                                        &package_name,
-                                        &version,
+                                worker_tx
+                                    .send(crate::worker::WorkerCommand::Verify {
+                                        recipe_index: *recipe_index,
+                                        patch_index: *patch_index,
+                                        patch_path,
+                                        cache_dir: cache_dir.to_path_buf(),
+                                        package: package_name,
+                                        version,
                                         log,
-                                    ).work_dir;
-
-                                    let patch_path =
-                                        recipe.patches[*patch_index].path.clone();
-
-                                    worker_tx
-                                        .send(crate::worker::WorkerCommand::Verify {
-                                            recipe_index: *recipe_index,
-                                            patch_index: *patch_index,
-                                            patch_path,
-                                            source_dir: work_dir.join("src"),
-                                        })
-                                        .map_err(|_| {
-                                            io::Error::other("worker thread exited")
-                                        })?;
-                                }
+                                    })
+                                    .map_err(|_| {
+                                        io::Error::other("worker thread exited")
+                                    })?;
                             }
 
                             None => {}
