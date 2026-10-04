@@ -92,7 +92,50 @@ fn confirm_creation(repository: &str, message: &str) {
     println!("Creating local repository '{repository}'...");
 }
 
+fn ensure_pacman_conf(repository: &str) {
+    let path = PathBuf::from("/etc/pacman.conf");
+    let include = format!("Include = /etc/pacman.d/{repository}");
+
+    let contents = std::fs::read_to_string(&path)
+        .expect("failed to read /etc/pacman.conf");
+
+    if contents.lines().any(|line| line.trim() == include) {
+        return;
+    }
+
+    let mut updated = contents;
+
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+
+    updated.push_str(&include);
+    updated.push('\n');
+
+    let temp_path = std::env::temp_dir().join("pot-pacman.conf");
+
+    std::fs::write(&temp_path, updated)
+        .expect("failed to create temporary pacman.conf");
+
+    let status = Command::new("sudo")
+        .args(["install", "-m", "644"])
+        .arg(&temp_path)
+        .arg(&path)
+        .status()
+        .expect("failed to install updated pacman.conf");
+
+    let _ = std::fs::remove_file(&temp_path);
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    println!("Added repository '{repository}' to /etc/pacman.conf.");
+}
+
 pub fn ensure(repository: &str) {
+    ensure_pacman_conf(repository);
+
     let config_path = config_path(repository);
 
     if config_path.exists() {
