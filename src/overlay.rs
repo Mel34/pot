@@ -51,16 +51,13 @@ impl Overlay {
         })
     }
 
-    pub fn unmount(&self) -> io::Result<()> {
-        let status = Command::new("sudo")
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        let _ = Command::new("sudo")
             .arg("umount")
             .arg(&self.merged)
-            .status()?;
-
-        if !status.success() {
-            return Err(io::Error::other("failed to unmount OverlayFS"));
-        }
-
-        Ok(())
+            .status();
     }
 }

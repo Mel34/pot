@@ -162,7 +162,7 @@ pub fn cook(
             .ok();
 
         let mut child = std::process::Command::new("makepkg")
-            .args(["-e"])
+            .args(["-e", "--nocheck"])
             .current_dir(&merged_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
