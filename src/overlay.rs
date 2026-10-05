@@ -4,8 +4,6 @@ use std::process::Command;
 
 pub struct Overlay {
     pub merged: PathBuf,
-    upper: PathBuf,
-    work: PathBuf,
 }
 
 impl Overlay {
@@ -46,8 +44,6 @@ impl Overlay {
 
         Ok(Self {
             merged,
-            upper,
-            work,
         })
     }
 

@@ -10,7 +10,7 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -232,6 +232,28 @@ fn draw(
     Ok(())
 }
 
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(height),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(width),
+            Constraint::Fill(1),
+        ])
+        .split(vertical[1]);
+
+    horizontal[1]
+}
+
 pub fn first_start(hostname: &str) -> io::Result<bool> {
     enable_raw_mode()?;
 
@@ -242,49 +264,91 @@ pub fn first_start(hostname: &str) -> io::Result<bool> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let mut selected = true;
+
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
 
-            let block = Block::default()
+            let outer = Block::default()
                 .title(" POT — First Start Setup ")
                 .borders(Borders::ALL);
 
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
+            frame.render_widget(outer, area);
+
+            let dialog_area = centered_rect(48, 9, area);
+
+            let dialog = Block::default()
+                .title(" Existing Local Repository Found ")
+                .borders(Borders::ALL);
+
+            let inner = dialog.inner(dialog_area);
+            frame.render_widget(dialog, dialog_area);
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(1),
+                    Constraint::Length(1),
                     Constraint::Length(2),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
                 ])
                 .split(inner);
 
-            let title = Paragraph::new("Existing Local Repository Found")
-                .style(Style::default().add_modifier(Modifier::BOLD));
+            let message = Paragraph::new("Use local repository:")
+                .alignment(ratatui::layout::Alignment::Center);
 
-            let message = Paragraph::new(format!(
-                "POT found an existing local pacman repository named '{hostname}'.
-                 Would you like POT to adopt this repository?",
-            ));
+            let repository = Paragraph::new(hostname)
+                .style(Style::default().add_modifier(Modifier::BOLD))
+                .alignment(ratatui::layout::Alignment::Center);
 
-            let help = Paragraph::new("[Enter] Adopt    [Esc] Quit");
+            let buttons = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(7),
+                    Constraint::Length(3),
+                    Constraint::Length(7),
+                    Constraint::Fill(1),
+                ])
+                .split(chunks[4]);
 
-            frame.render_widget(title, chunks[0]);
+            let yes = if selected {
+                Paragraph::new(Span::styled(
+                    "[ YES ]",
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ))
+            } else {
+                Paragraph::new("[ YES ]")
+            };
+
+            let no = if !selected {
+                Paragraph::new(Span::styled(
+                    "[ NO ]",
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ))
+            } else {
+                Paragraph::new("[ NO ]")
+            };
+
             frame.render_widget(message, chunks[1]);
-            frame.render_widget(help, chunks[2]);
+            frame.render_widget(repository, chunks[2]);
+            frame.render_widget(yes, buttons[1]);
+            frame.render_widget(no, buttons[3]);
         })?;
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
+                    KeyCode::Left | KeyCode::Right => {
+                        selected = !selected;
+                    }
                     KeyCode::Enter => {
                         disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         terminal.show_cursor()?;
-                        return Ok(true);
+                        return Ok(selected);
                     }
                     KeyCode::Esc => {
                         disable_raw_mode()?;
@@ -340,6 +404,7 @@ pub fn run(
                     recipe_index,
                     work_dir,
                     success,
+                    ..
                 } => {
                     worker_status[recipe_index] = None;
 

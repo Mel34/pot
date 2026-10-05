@@ -2,8 +2,9 @@ mod config;
 mod cookbook;
 mod kitchen;
 mod overlay;
-mod paths;
 mod package;
+mod patch;
+mod paths;
 mod prepare;
 mod repository;
 mod ui;
@@ -48,6 +49,12 @@ fn main() {
     }
 
     let repository_name = config.repository.clone().unwrap_or_else(repository::name);
+
+    if repository::repository_dir(&repository_name).exists()
+        && !ui::first_start(&repository_name).unwrap_or(false)
+    {
+        return;
+    }
 
     repository::ensure(&repository_name);
 

@@ -10,13 +10,14 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::cookbook::{Recipe, find_source_dir};
+use crate::cookbook::Recipe;
 use crate::overlay::Overlay;
 use crate::repository;
 
 pub fn cook(
     recipe_name: &str,
     patches: &[std::path::PathBuf],
+    git_sources: &[String],
     cache_dir: &Path,
     repository_name: &str,
     _log: bool,
@@ -44,80 +45,73 @@ pub fn cook(
     let merged_dir = overlay.merged.clone();
 
     for patch in patches {
-        let source_dir = match find_source_dir(&merged_dir.join("src"), patch) {
-            Some(path) => path,
-            None => {
+        let verification =
+            crate::patch::verify(&merged_dir, git_sources, patch);
+
+        let (source_dir, strip_level, already_applied) = match verification {
+            crate::patch::Verification::Applicable(path, strip_level) => {
+                (path, strip_level, false)
+            }
+
+            crate::patch::Verification::Applied(path, strip_level) => {
+                (path, strip_level, true)
+            }
+
+            crate::patch::Verification::Conflict(_error) => {
                 output.push_str(&format!(
-                    "Failed to locate source directory for {}.\n",
+                    "Overlay conflicts: {}\n",
                     patch.display()
                 ));
                 success = false;
                 break;
             }
         };
+        
+        output.push_str(&format!(
+            "Patch source directory: {}\n",
+            source_dir.display()
+        ));
 
-        let check = std::process::Command::new("git")
-            .args(["apply", "--check", "-p3"])
+        if already_applied {
+            output.push_str(&format!(
+                "Overlay already applied: {}\n",
+                patch.display()
+            ));
+            continue;
+        }
+
+        event_tx
+            .send(crate::worker::WorkerEvent::CookStatus {
+                recipe_index,
+                status: format!(
+                    "applying {}",
+                    patch.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("overlay"),
+                ),
+            })
+            .ok();
+
+        output.push_str(&format!(
+            "Applying overlay: {}\n",
+            patch.display()
+        ));
+
+        let strip_arg = format!("-p{}", strip_level);
+
+        let result = std::process::Command::new("git")
+            .args(["apply", &strip_arg])
             .arg(patch)
             .current_dir(&source_dir)
             .output()
-            .expect("failed to run git apply --check");
+            .expect("failed to run git apply");
 
-        if check.status.success() {
-            event_tx
-                .send(crate::worker::WorkerEvent::CookStatus {
-                    recipe_index,
-                    status: format!(
-                        "applying {}",
-                        patch.file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("overlay"),
-                    ),
-                })
-                .ok();
+        output.push_str(&String::from_utf8_lossy(&result.stdout));
+        output.push_str(&String::from_utf8_lossy(&result.stderr));
 
-            output.push_str(&format!(
-                "Applying overlay: {}\n",
-                patch.display()
-            ));
-
-            let result = std::process::Command::new("git")
-                .args(["apply", "-p3"])
-                .arg(patch)
-                .current_dir(&source_dir)
-                .output()
-                .expect("failed to run git apply");
-
-            output.push_str(&String::from_utf8_lossy(&result.stdout));
-            output.push_str(&String::from_utf8_lossy(&result.stderr));
-
-            if !result.status.success() {
-                success = false;
-                break;
-            }
-        } else {
-            let reverse_check = std::process::Command::new("git")
-                .args(["apply", "--reverse", "--check", "-p3"])
-                .arg(patch)
-                .current_dir(&source_dir)
-                .output()
-                .expect("failed to run git apply --reverse --check");
-
-            if reverse_check.status.success() {
-                output.push_str(&format!(
-                    "Overlay already applied: {}\n",
-                    patch.display()
-                ));
-            } else {
-                output.push_str(&format!(
-                    "Overlay conflicts: {}\n",
-                    patch.display()
-                ));
-                output.push_str(&String::from_utf8_lossy(&check.stderr));
-                output.push_str(&String::from_utf8_lossy(&reverse_check.stderr));
-                success = false;
-                break;
-            }
+        if !result.status.success() {
+            success = false;
+            break;
         }
     }
 
