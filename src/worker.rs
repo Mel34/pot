@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{
     Arc,
@@ -76,6 +76,7 @@ enum WorkerJob {
         cache_dir: PathBuf,
         repository_name: String,
         log: bool,
+        git_sources: Vec<String>,
     },
     Shutdown,
 }
@@ -92,6 +93,7 @@ pub enum WorkerEvent {
         recipe_index: usize,
         work_dir: PathBuf,
         success: bool,
+        git_sources: Vec<String>,
     },
     Verified {
         recipe_index: usize,
@@ -155,6 +157,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                                 recipe_index,
                                 work_dir: result.work_dir,
                                 success: result.success,
+                                git_sources: result.git_sources,
                             })
                             .ok();
                     }
@@ -190,6 +193,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                                 recipe_index,
                                 work_dir: result.work_dir,
                                 success: result.success,
+                                git_sources: result.git_sources,
                             })
                             .ok();
                     }
@@ -272,10 +276,12 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                         cache_dir,
                         repository_name,
                         log,
+                        git_sources,
                     } => {
                         let (output, success, overlay) = crate::kitchen::cook(
                             &recipe_name,
                             &patches,
+                            &git_sources,
                             &cache_dir,
                             &repository_name,
                             log,
@@ -319,6 +325,11 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                 recipe_index: usize,
             }
 
+            struct PreparedRecipe {
+                work_dir: PathBuf,
+                git_sources: Vec<String>,
+            }
+
             struct PendingPrepare {
                 recipe_index: usize,
                 cache_dir: PathBuf,
@@ -335,6 +346,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
 
             let mut pending_prepares: VecDeque<PendingPrepare> = VecDeque::new();
             let mut pending_verifies: VecDeque<PendingVerify> = VecDeque::new();
+            let mut prepared_recipes: HashMap<usize, PreparedRecipe> = HashMap::new();
 
             let mut active_prepare: Option<ActivePrepare> = None;
 
@@ -344,8 +356,19 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                         recipe_index,
                         work_dir,
                         success,
+                        git_sources,
                     } = &event
                     {
+                        if *success {
+                            prepared_recipes.insert(
+                                *recipe_index,
+                                PreparedRecipe {
+                                    work_dir: work_dir.clone(),
+                                    git_sources: git_sources.clone(),
+                                },
+                            );
+                        }
+
                         let active = active_prepare
                             .take()
                             .expect("prepared event without active preparation");
@@ -524,6 +547,14 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                         } => {
                             cook_abort.store(false, Ordering::Relaxed);
 
+                            let git_sources = prepared_recipes
+                                .get(&recipe_index)
+                                .map(|prepared| prepared.git_sources.clone())
+                                .filter(|sources| !sources.is_empty())
+                                .unwrap_or_else(|| {
+                                    crate::prepare::git_sources(&cache_dir, &recipe_name)
+                                });
+
                             cook_tx
                                 .send(WorkerJob::Cook {
                                     recipe_index,
@@ -532,6 +563,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                                     cache_dir,
                                     repository_name,
                                     log,
+                                    git_sources,
                                 })
                                 .ok();
                         }

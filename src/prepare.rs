@@ -4,6 +4,7 @@ use std::process::Command;
 pub struct PrepareResult {
     pub work_dir: PathBuf,
     pub success: bool,
+    pub git_sources: Vec<String>,
 }
 
 pub fn prepare_sources(
@@ -35,10 +36,36 @@ pub fn prepare_sources(
         return PrepareResult {
             work_dir: work_root.join(package),
             success: false,
+            git_sources: Vec::new(),
         };
     }
 
     let work_dir = work_root.join(package);
+
+    let srcinfo = run_command(
+        Command::new("makepkg")
+            .args(["--printsrcinfo"])
+            .current_dir(&work_dir),
+    );
+
+    if !srcinfo.success {
+        return PrepareResult {
+            work_dir,
+            success: false,
+            git_sources: Vec::new(),
+        };
+    }
+
+    let git_sources: Vec<String> = srcinfo
+        .stdout
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("source = git+"))
+        .map(str::to_owned)
+        .collect();
+
+    for source in &git_sources {
+        println!("POT GIT SOURCE: {source}");
+    }
 
     let makepkg = run_command(
         Command::new("makepkg")
@@ -49,7 +76,28 @@ pub fn prepare_sources(
     PrepareResult {
         work_dir,
         success: makepkg.success,
+        git_sources,
     }
+}
+
+pub fn git_sources(cache_dir: &Path, package: &str) -> Vec<String> {
+    let work_dir = cache_dir.join("work").join(package);
+
+    let output = Command::new("makepkg")
+        .args(["--printsrcinfo"])
+        .current_dir(&work_dir)
+        .output()
+        .expect("failed to run makepkg");
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("source = git+"))
+        .map(str::to_owned)
+        .collect()
 }
 
 pub fn is_prepared(cache_dir: &Path, package: &str) -> bool {
@@ -58,6 +106,7 @@ pub fn is_prepared(cache_dir: &Path, package: &str) -> bool {
 
 struct CommandResult {
     success: bool,
+    stdout: String,
 }
 
 fn run_command(command: &mut Command) -> CommandResult {
@@ -65,5 +114,6 @@ fn run_command(command: &mut Command) -> CommandResult {
 
     CommandResult {
         success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
     }
 }
