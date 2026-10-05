@@ -23,9 +23,8 @@ pub fn cook(
     event_tx: &std::sync::mpsc::Sender<crate::worker::WorkerEvent>,
     recipe_index: usize,
     cook_abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> (String, bool) {
+) -> (String, bool, Option<Overlay>) {
     let work_dir = cache_dir.join("work").join(recipe_name);
-    let src_dir = work_dir.join("src");
 
     let mut output = String::new();
     let mut success = true;
@@ -33,12 +32,12 @@ pub fn cook(
     let overlay_root = cache_dir.join("overlay").join(recipe_name);
     let overlay = match Overlay::mount(&work_dir, &overlay_root) {
         Ok(overlay) => {
-            output.push_str("OverlayFS mounted.\\n");
+            output.push_str("OverlayFS mounted.\n");
             overlay
         }
         Err(error) => {
-            output.push_str(&format!("Failed to mount OverlayFS: {error}\\n"));
-            return (output, false);
+            output.push_str(&format!("Failed to mount OverlayFS: {error}\n"));
+            return (output, false, None);
         }
     };
 
@@ -129,7 +128,7 @@ pub fn cook(
                 output.push_str(&format!(
                     "Failed to read work directory: {error}\n"
                 ));
-                return (output, false);
+                return (output, false, Some(overlay));
             }
         } {
             let path = match entry {
@@ -138,7 +137,7 @@ pub fn cook(
                     output.push_str(&format!(
                         "Failed to read work directory entry: {error}\n"
                     ));
-                    return (output, false);
+                    return (output, false, Some(overlay));
                 }
             };
 
@@ -147,7 +146,7 @@ pub fn cook(
                     output.push_str(&format!(
                         "Failed to remove stale package: {error}\n"
                     ));
-                    return (output, false);
+                    return (output, false, Some(overlay));
                 }
             }
         }
@@ -263,7 +262,7 @@ pub fn cook(
                 output.push_str(&format!(
                     "Failed to read merged directory: {error}\n"
                 ));
-                return (output, false);
+                return (output, false, Some(overlay));
             }
         };
 
@@ -274,7 +273,7 @@ pub fn cook(
                     output.push_str(&format!(
                         "Failed to read work directory entry: {error}\n"
                     ));
-                    return (output, false);
+                    return (output, false, Some(overlay));
                 }
             };
 
@@ -293,7 +292,7 @@ pub fn cook(
                     output.push_str(&format!(
                         "Failed to set package permissions: {error}\n"
                     ));
-                    return (output, false);
+                    return (output, false, Some(overlay));
                 }
 
                 let destination = repository_dir.join(&filename);
@@ -302,14 +301,14 @@ pub fn cook(
                     output.push_str(&format!(
                         "Failed to copy package into repository: {error}\n"
                     ));
-                    return (output, false);
+                    return (output, false, Some(overlay));
                 }
 
                 if let Err(error) = std::fs::remove_file(&path) {
                     output.push_str(&format!(
                         "Failed to remove package from overlay: {error}\n"
                     ));
-                    return (output, false);
+                    return (output, false, Some(overlay));
                 }
 
                 packages.push(filename);
@@ -385,7 +384,7 @@ pub fn cook(
         "\nBuild failed."
     });
 
-    (output, success)
+    (output, success, Some(overlay))
 }
 
 pub fn run(
@@ -426,6 +425,7 @@ pub fn run(
     };
 
     let mut finished = false;
+    let mut overlay = None;
 
     loop {
         while let Ok(event) = worker_rx.try_recv() {
@@ -442,11 +442,13 @@ pub fn run(
                 crate::worker::WorkerEvent::Cooked {
                     recipe_index: cooked_recipe,
                     output: build_output,
-                    success: _,
+                    success,
+                    overlay: cooked_overlay,
                 } => {
                     if cooked_recipe == recipe_index {
                         output = build_output;
-                        finished = true;
+                        finished = success;
+                        overlay = cooked_overlay;
                     }
                 }
 
@@ -490,7 +492,10 @@ pub fn run(
                     worker_tx.send(crate::worker::WorkerCommand::AbortCook).ok();
                 } else {
                     match key.code {
-                        KeyCode::Esc => return Ok(finished),
+                        KeyCode::Esc => {
+                            drop(overlay);
+                            return Ok(finished);
+                        }
                         _ => {}
                     }
                 }

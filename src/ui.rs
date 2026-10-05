@@ -360,6 +360,7 @@ pub fn run(
                     recipe_index,
                     success,
                     output: _,
+                    overlay: _,
                 } => {
                     worker_status[recipe_index] = None;
                     cook_status[recipe_index] = Some(if success {

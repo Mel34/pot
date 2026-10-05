@@ -10,6 +10,7 @@ use std::sync::{
 use std::thread;
 
 use crate::cookbook::PatchStatus;
+use crate::overlay::Overlay;
 
 pub enum WorkerCommand {
     Prepare {
@@ -109,6 +110,7 @@ pub enum WorkerEvent {
         recipe_index: usize,
         output: String,
         success: bool,
+        overlay: Option<Overlay>,
     },
     Stopped,
 }
@@ -271,7 +273,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                         repository_name,
                         log,
                     } => {
-                        let (output, success) = crate::kitchen::cook(
+                        let (output, success, overlay) = crate::kitchen::cook(
                             &recipe_name,
                             &patches,
                             &cache_dir,
@@ -287,6 +289,7 @@ pub fn start() -> (Sender<WorkerCommand>, Receiver<WorkerEvent>) {
                                 recipe_index,
                                 output,
                                 success,
+                                overlay,
                             })
                             .ok();
                     }

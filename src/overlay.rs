@@ -55,9 +55,24 @@ impl Overlay {
 
 impl Drop for Overlay {
     fn drop(&mut self) {
-        let _ = Command::new("sudo")
+        match Command::new("sudo")
             .arg("umount")
             .arg(&self.merged)
-            .status();
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                eprintln!(
+                    "Failed to unmount OverlayFS at {}: {status}",
+                    self.merged.display()
+                );
+            }
+            Err(error) => {
+                eprintln!(
+                    "Failed to run umount for {}: {error}",
+                    self.merged.display()
+                );
+            }
+        }
     }
 }
