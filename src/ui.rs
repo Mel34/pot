@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::cookbook::{PatchStatus, Recipe};
@@ -207,6 +207,7 @@ fn draw(
             state.select(Some(selected + 2));
         }
 
+        frame.render_widget(Clear, chunks[0]);
         frame.render_stateful_widget(list, chunks[0], &mut state);
 
         let help = match menu_items.get(selected) {
@@ -524,6 +525,7 @@ pub fn run(
                                             repository_name,
                                             log,
                                             false,
+                                            &mut cook_status[*recipe_index],
                                         )?;
 
                                         if finished {
@@ -558,6 +560,7 @@ pub fn run(
                                             repository_name,
                                             log,
                                             true,
+                                            &mut cook_status[*recipe_index],
                                         )?;
 
                                         if finished {

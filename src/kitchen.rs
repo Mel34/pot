@@ -391,6 +391,7 @@ pub fn run(
     repository_name: &str,
     log: bool,
     start_cook: bool,
+    cook_status: &mut Option<String>,
 ) -> io::Result<bool> {
     let patches = recipe
         .patches
@@ -430,6 +431,15 @@ pub fn run(
                 } => {
                     if cooked_recipe == recipe_index {
                         output.push_str(&chunk);
+                    }
+                }
+
+                crate::worker::WorkerEvent::CookStatus {
+                    recipe_index: cooked_recipe,
+                    status,
+                } => {
+                    if cooked_recipe == recipe_index {
+                        *cook_status = Some(status);
                     }
                 }
 

@@ -63,9 +63,6 @@ pub fn prepare_sources(
         .map(str::to_owned)
         .collect();
 
-    for source in &git_sources {
-        println!("POT GIT SOURCE: {source}");
-    }
 
     let makepkg = run_command(
         Command::new("makepkg")
