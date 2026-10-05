@@ -64,6 +64,16 @@ pub fn prepare_sources(
         .collect();
 
 
+    if let Some(source) = git_sources.first() {
+        if !prepare_git_source(&work_dir, source) {
+            return PrepareResult {
+                work_dir,
+                success: false,
+                git_sources,
+            };
+        }
+    }
+
     let makepkg = run_command(
         Command::new("makepkg")
             .args(["-sfo", "--noconfirm", "--holdver"])
@@ -75,6 +85,104 @@ pub fn prepare_sources(
         success: makepkg.success,
         git_sources,
     }
+}
+
+fn prepare_git_source(work_dir: &Path, source: &str) -> bool {
+    let source = source.strip_suffix('"').unwrap_or(source);
+
+    let (url, fragment) = match source.split_once('#') {
+        Some(value) => value,
+        None => return false,
+    };
+
+    let (url, _) = url.split_once('?').unwrap_or((url, ""));
+    let (kind, revision) = match fragment.split_once('=') {
+        Some(value) => value,
+        None => return false,
+    };
+
+    if kind != "tag" && kind != "commit" {
+        return false;
+    }
+
+    let repo_name = match url.rsplit('/').next() {
+        Some(name) => name.strip_suffix(".git").unwrap_or(name),
+        None => return false,
+    };
+
+    let cache_repo = work_dir.join(repo_name);
+    let src_dir = work_dir.join("src").join(repo_name);
+
+    if !cache_repo.exists() {
+        let init = run_command(
+            Command::new("git")
+                .args(["init", "--bare"])
+                .arg(&cache_repo),
+        );
+
+        if !init.success {
+            return false;
+        }
+
+        let remote = run_command(
+            Command::new("git")
+                .args(["-C"])
+                .arg(&cache_repo)
+                .args(["remote", "add", "origin"])
+                .arg(url),
+        );
+
+        if !remote.success {
+            return false;
+        }
+    }
+
+    if !src_dir.exists() {
+        let fetch_ref = format!(
+            "refs/{}/{}:refs/{}/{}",
+            if kind == "tag" { "tags" } else { "heads" },
+            revision,
+            if kind == "tag" { "tags" } else { "heads" },
+            revision
+        );
+
+        let fetch = run_command(
+            Command::new("git")
+                .args(["-C"])
+                .arg(&cache_repo)
+                .args(["fetch", "--depth=1", "origin"])
+                .arg(&fetch_ref),
+        );
+
+        if !fetch.success {
+            return false;
+        }
+
+        let clone = run_command(
+            Command::new("git")
+                .args(["clone", "--no-checkout"])
+                .arg(&cache_repo)
+                .arg(&src_dir),
+        );
+
+        if !clone.success {
+            return false;
+        }
+
+        let checkout = run_command(
+            Command::new("git")
+                .args(["-C"])
+                .arg(&src_dir)
+                .args(["checkout", "--detach"])
+                .arg(revision),
+        );
+
+        if !checkout.success {
+            return false;
+        }
+    }
+
+    true
 }
 
 pub fn git_sources(cache_dir: &Path, package: &str) -> Vec<String> {
