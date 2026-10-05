@@ -42,7 +42,7 @@ pub fn prepare_sources(
 
     let makepkg = run_command(
         Command::new("makepkg")
-            .args(["-sfo", "--noconfirm"])
+            .args(["-sfo", "--noconfirm", "--holdver"])
             .current_dir(&work_dir),
     );
 
