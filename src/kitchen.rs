@@ -11,6 +11,7 @@ use ratatui::{
 };
 
 use crate::cookbook::{Recipe, find_source_dir};
+use crate::overlay::Overlay;
 use crate::repository;
 
 pub fn cook(
@@ -29,8 +30,22 @@ pub fn cook(
     let mut output = String::new();
     let mut success = true;
 
+    let overlay_root = cache_dir.join("overlay").join(recipe_name);
+    let overlay = match Overlay::mount(&work_dir, &overlay_root) {
+        Ok(overlay) => {
+            output.push_str("OverlayFS mounted.\\n");
+            overlay
+        }
+        Err(error) => {
+            output.push_str(&format!("Failed to mount OverlayFS: {error}\\n"));
+            return (output, false);
+        }
+    };
+
+    let merged_dir = overlay.merged.clone();
+
     for patch in patches {
-        let source_dir = match find_source_dir(&src_dir, patch) {
+        let source_dir = match find_source_dir(&merged_dir.join("src"), patch) {
             Some(path) => path,
             None => {
                 output.push_str(&format!(
@@ -148,7 +163,7 @@ pub fn cook(
 
         let mut child = std::process::Command::new("makepkg")
             .args(["-e"])
-            .current_dir(&work_dir)
+            .current_dir(&merged_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -242,11 +257,11 @@ pub fn cook(
         let repository_dir = repository::repository_dir(repository_name);
         let mut packages = Vec::new();
 
-        let entries = match std::fs::read_dir(&work_dir) {
+        let entries = match std::fs::read_dir(&merged_dir) {
             Ok(entries) => entries,
             Err(error) => {
                 output.push_str(&format!(
-                    "Failed to read work directory: {error}\n"
+                    "Failed to read merged directory: {error}\n"
                 ));
                 return (output, false);
             }
@@ -281,11 +296,18 @@ pub fn cook(
                     return (output, false);
                 }
 
-                if let Err(error) =
-                    std::fs::rename(&path, repository_dir.join(&filename))
-                {
+                let destination = repository_dir.join(&filename);
+
+                if let Err(error) = std::fs::copy(&path, &destination) {
                     output.push_str(&format!(
-                        "Failed to move package into repository: {error}\n"
+                        "Failed to copy package into repository: {error}\n"
+                    ));
+                    return (output, false);
+                }
+
+                if let Err(error) = std::fs::remove_file(&path) {
+                    output.push_str(&format!(
+                        "Failed to remove package from overlay: {error}\n"
                     ));
                     return (output, false);
                 }
