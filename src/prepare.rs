@@ -76,7 +76,7 @@ pub fn prepare_sources(
 
     let makepkg = run_command(
         Command::new("makepkg")
-            .args(["-sfo", "--noconfirm", "--holdver"])
+            .args(["-sfeo", "--noconfirm", "--holdver"])
             .current_dir(&work_dir),
     );
 
