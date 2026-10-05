@@ -134,6 +134,14 @@ fn ensure_pacman_conf(repository: &str) {
 }
 
 pub fn ensure(repository: &str) {
+    ensure_inner(repository, false);
+}
+
+pub fn ensure_confirmed(repository: &str) {
+    ensure_inner(repository, true);
+}
+
+fn ensure_inner(repository: &str, confirmed: bool) {
     ensure_pacman_conf(repository);
 
     let config_path = config_path(repository);
@@ -145,10 +153,12 @@ pub fn ensure(repository: &str) {
             return;
         }
 
-        confirm_creation(
-            repository,
-            &format!("Local repository '{repository}' has no database."),
-        );
+        if !confirmed {
+            confirm_creation(
+                repository,
+                &format!("Local repository '{repository}' has no database."),
+            );
+        }
 
         let status = Command::new("repo-add")
             .arg(&database)
@@ -163,10 +173,12 @@ pub fn ensure(repository: &str) {
         return;
     }
 
-    confirm_creation(
-        repository,
-        &format!("Local repository '{repository}' is not configured."),
-    );
+    if !confirmed {
+        confirm_creation(
+            repository,
+            &format!("Local repository '{repository}' is not configured."),
+        );
+    }
 
     let repository_dir = PathBuf::from("/var/cache/pacman").join(repository);
 

@@ -254,7 +254,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
-pub fn first_start(hostname: &str) -> io::Result<bool> {
+pub fn first_start(title: &str, message: &str, hostname: &str) -> io::Result<bool> {
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
@@ -279,7 +279,7 @@ pub fn first_start(hostname: &str) -> io::Result<bool> {
             let dialog_area = centered_rect(48, 9, area);
 
             let dialog = Block::default()
-                .title(" Existing Local Repository Found ")
+                .title(format!(" {title} "))
                 .borders(Borders::ALL);
 
             let inner = dialog.inner(dialog_area);
@@ -296,7 +296,7 @@ pub fn first_start(hostname: &str) -> io::Result<bool> {
                 ])
                 .split(inner);
 
-            let message = Paragraph::new("Use local repository:")
+            let message = Paragraph::new(message)
                 .alignment(ratatui::layout::Alignment::Center);
 
             let repository = Paragraph::new(hostname)
