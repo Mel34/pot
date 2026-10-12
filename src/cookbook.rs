@@ -1,7 +1,6 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug)]
 pub struct Recipe {
@@ -19,9 +18,21 @@ pub struct Patch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchStatus {
+    /// Not checked (yet) against the prepared sources.
     Unknown,
+    /// A check is queued or running in the background.
+    Checking,
     Clean,
     Failed,
+}
+
+impl Patch {
+    pub fn file_name(&self) -> &str {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<invalid filename>")
+    }
 }
 
 impl Recipe {
@@ -47,22 +58,6 @@ impl Recipe {
         Ok(())
     }
 
-    pub fn check_patches(&mut self, srcdir: &Path) -> bool {
-        let mut all_clean = true;
-
-        for patch in &mut self.patches {
-            if !patch.selected {
-                continue;
-            }
-
-            if patch.check(srcdir) != PatchStatus::Clean {
-                all_clean = false;
-            }
-        }
-
-        all_clean
-    }
-
     pub fn save_selection(&self) -> io::Result<()> {
         let state_path = self.path.join(".pot");
 
@@ -82,82 +77,6 @@ impl Recipe {
         };
 
         fs::write(state_path, contents)
-    }
-}
-
-pub fn find_source_dir(srcdir: &Path, patch: &Path) -> Option<PathBuf> {
-    let contents = fs::read_to_string(patch).ok()?;
-
-    let patch_paths = contents
-        .lines()
-        .filter_map(|line| line.strip_prefix("--- a/"))
-        .filter(|path| *path != "/dev/null")
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
-
-    fn candidates(root: &Path) -> io::Result<Vec<PathBuf>> {
-        let mut result = Vec::new();
-
-        for entry in fs::read_dir(root)? {
-            let path = entry?.path();
-
-            if path.is_dir() {
-                result.push(path.clone());
-                result.extend(candidates(&path)?);
-            }
-        }
-
-        Ok(result)
-    }
-
-    let candidates = candidates(srcdir).ok()?;
-    let mut fallback = None;
-
-    for candidate in candidates {
-        for patch_path in &patch_paths {
-            let components = patch_path.components().collect::<Vec<_>>();
-
-            for index in 0..components.len() {
-                let suffix = components[index..].iter().collect::<PathBuf>();
-
-                if candidate.join(&suffix).exists() {
-                    if candidate.join(".git").exists() {
-                        return Some(candidate);
-                    }
-
-                    if fallback.is_none() {
-                        fallback = Some(candidate.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    fallback
-}
-
-impl Patch {
-    pub fn check(&mut self, srcdir: &Path) -> PatchStatus {
-        let source_dir = match find_source_dir(srcdir, &self.path) {
-            Some(path) => path,
-            None => {
-                self.status = PatchStatus::Failed;
-                return self.status;
-            }
-        };
-
-        let status = Command::new("git")
-            .args(["apply", "--check", "-p3"])
-            .arg(&self.path)
-            .current_dir(source_dir)
-            .output();
-
-        self.status = match status {
-            Ok(output) if output.status.success() => PatchStatus::Clean,
-            _ => PatchStatus::Failed,
-        };
-
-        self.status
     }
 }
 
@@ -216,158 +135,61 @@ pub fn discover(root: &Path) -> io::Result<Vec<Recipe>> {
 mod tests {
     use super::*;
 
-    fn fixture(name: &str, patch: &str) -> (PathBuf, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "pot-cookbook-test-{}-{}",
-            std::process::id(),
-            name
-        ));
+    fn cookbook(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("pot-cookbook-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
 
-        let source_dir = root.join("src/nautilus/src");
-        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(root.join("nautilus")).unwrap();
+        fs::create_dir_all(root.join("empty")).unwrap();
+        fs::write(root.join("nautilus/b.patch"), "").unwrap();
+        fs::write(root.join("nautilus/a.patch"), "").unwrap();
+        fs::write(root.join("nautilus/notes.txt"), "").unwrap();
+        fs::write(root.join("stray-file"), "").unwrap();
 
-        fs::write(
-            source_dir.join("nautilus-window-slot.c"),
-            "original\n",
-        )
-        .unwrap();
-
-        let patch_path = root.join("test.patch");
-        fs::write(&patch_path, patch).unwrap();
-
-        (root, patch_path)
+        root
     }
 
     #[test]
-    fn returns_none_when_source_is_not_found() {
-        let root = std::env::temp_dir().join(format!(
-            "pot-cookbook-test-{}-missing",
-            std::process::id()
-        ));
+    fn discovers_recipes_and_patches_in_order() {
+        let root = cookbook("discover");
 
-        fs::create_dir_all(root.join("src/nautilus/src")).unwrap();
-
-        let patch = root.join("missing.patch");
-
-        assert_eq!(find_source_dir(&root.join("src"), &patch), None);
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn finds_source_dir() {
-        let patch = "\
---- a/src/nautilus/src/nautilus-window-slot.c
-+++ b/src/nautilus/src/nautilus-window-slot.c
-";
-
-        let (root, patch_path) = fixture("find", patch);
-        let srcdir = root.join("src");
+        let recipes = discover(&root).unwrap();
 
         assert_eq!(
-            find_source_dir(&srcdir, &patch_path),
-            Some(root.join("src/nautilus"))
+            recipes.iter().map(|recipe| recipe.name.as_str()).collect::<Vec<_>>(),
+            ["empty", "nautilus"]
+        );
+
+        assert!(recipes[0].patches.is_empty());
+
+        assert_eq!(
+            recipes[1].patches.iter().map(Patch::file_name).collect::<Vec<_>>(),
+            ["a.patch", "b.patch"]
         );
 
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn check_selected_patches() {
-        let patch = "\
---- a/src/nautilus/src/nautilus-window-slot.c
-+++ b/src/nautilus/src/nautilus-window-slot.c
-@@ -1 +1 @@
--original
-+changed
-";
+    fn selection_round_trips() {
+        let root = cookbook("selection");
 
-        let (root, patch_path) = fixture("selected", patch);
+        let mut recipes = discover(&root).unwrap();
+        let nautilus = &mut recipes[1];
 
-        let mut recipe = Recipe {
-            name: "nautilus".to_string(),
-            path: root.clone(),
-            patches: vec![Patch {
-                path: patch_path,
-                selected: true,
-                status: PatchStatus::Unknown,
-            }],
-        };
+        nautilus.patches[1].selected = true;
+        nautilus.save_selection().unwrap();
 
-        assert!(recipe.check_patches(&root.join("src")));
-        assert_eq!(recipe.patches[0].status, PatchStatus::Clean);
+        let reloaded = discover(&root).unwrap();
+
+        assert!(!reloaded[1].patches[0].selected);
+        assert!(reloaded[1].patches[1].selected);
 
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn check_selected_patches_ignores_unselected() {
-        let root = std::env::temp_dir().join(format!(
-            "pot-cookbook-test-{}-unselected",
-            std::process::id()
-        ));
-
-        let mut recipe = Recipe {
-            name: "test".to_string(),
-            path: root.clone(),
-            patches: vec![Patch {
-                path: root.join("does-not-exist.patch"),
-                selected: false,
-                status: PatchStatus::Unknown,
-            }],
-        };
-
-        assert!(recipe.check_patches(&root.join("src")));
-        assert_eq!(recipe.patches[0].status, PatchStatus::Unknown);
-    }
-
-    #[test]
-    fn check_patch_status() {
-        let clean_patch = "\
---- a/src/nautilus/src/nautilus-window-slot.c
-+++ b/src/nautilus/src/nautilus-window-slot.c
-@@ -1 +1 @@
--original
-+changed
-";
-
-        let (root, clean_path) = fixture("clean", clean_patch);
-
-        let mut clean = Patch {
-            path: clean_path,
-            selected: true,
-            status: PatchStatus::Unknown,
-        };
-
-        assert_eq!(
-            clean.check(&root.join("src")),
-            PatchStatus::Clean
-        );
-
-        fs::remove_dir_all(root).unwrap();
-
-        let failed_patch = "\
---- a/src/nautilus/src/nautilus-window-slot.c
-+++ b/src/nautilus/src/nautilus-window-slot.c
-@@ -1 +1 @@
--does-not-exist
-+changed
-";
-
-        let (root, failed_path) = fixture("failed", failed_patch);
-
-        let mut failed = Patch {
-            path: failed_path,
-            selected: true,
-            status: PatchStatus::Unknown,
-        };
-
-        assert_eq!(
-            failed.check(&root.join("src")),
-            PatchStatus::Failed
-        );
-
-        fs::remove_dir_all(root).unwrap();
+    fn missing_cookbook_is_an_error() {
+        assert!(discover(Path::new("/definitely/not/a/cookbook")).is_err());
     }
 }
-
