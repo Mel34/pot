@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! `sudo` without ever prompting inside the TUI.
 //!
 //! A password prompt that appears while the interface owns the terminal is

@@ -441,6 +441,7 @@ pub fn run(
     _cookbook_dir: &Path,
 ) -> io::Result<()> {
     let worker = crate::worker::start(env.clone())?;
+    crate::sudo::spawn_keepalive(|| {});
     let mut guard = TerminalGuard::enter()?;
 
     let mut expanded = vec![false; recipes.len()];
@@ -670,6 +671,16 @@ pub fn run(
                                 let is_prepared = prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready;
 
                                 if is_prepared {
+                                    if !crate::sudo::credentials_valid() {
+                                        guard.suspend()?;
+                                        let auth_result = crate::sudo::authenticate();
+                                        guard.resume()?;
+                                        if let Err(error) = auth_result {
+                                            cook_status[recipe_index] = Some(format!("[sudo: {error}]"));
+                                            continue;
+                                        }
+                                    }
+
                                     let patches = recipe
                                         .patches
                                         .iter()
