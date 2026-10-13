@@ -110,6 +110,60 @@ fn interactive(command: &mut Command, what: &str) -> Result<(), String> {
     }
 }
 
+fn is_official_repository(name: &str) -> bool {
+    matches!(
+        name,
+        "core"
+            | "core-testing"
+            | "extra"
+            | "extra-testing"
+            | "multilib"
+            | "multilib-testing"
+            | "gnome-unstable"
+            | "kde-unstable"
+    )
+}
+
+fn insert_repository_include(contents: &str, include: &str) -> String {
+    let newline = if contents.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+
+    let mut offset = 0;
+    let mut insertion = None;
+
+    for line in contents.split_inclusive('\n') {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let name = &trimmed[1..trimmed.len() - 1];
+
+            if is_official_repository(name) {
+                insertion = Some(offset);
+                break;
+            }
+        }
+
+        offset += line.len();
+    }
+
+    let mut updated = contents.to_owned();
+
+    if let Some(offset) = insertion {
+        updated.insert_str(offset, &format!("{include}{newline}"));
+    } else {
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push_str(newline);
+        }
+        updated.push_str(include);
+        updated.push_str(newline);
+    }
+
+    updated
+}
+
 fn ensure_pacman_conf(repository: &str) -> Result<(), String> {
     let path = PathBuf::from("/etc/pacman.conf");
     let include = format!("Include = /etc/pacman.d/{repository}");
@@ -121,14 +175,7 @@ fn ensure_pacman_conf(repository: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut updated = contents;
-
-    if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-
-    updated.push_str(&include);
-    updated.push('\n');
+    let updated = insert_repository_include(&contents, &include);
 
     let temp_path = std::env::temp_dir().join("pot-pacman.conf");
 
@@ -242,4 +289,71 @@ fn ensure_inner(repository: &str, confirmed: bool) -> Result<(), String> {
     println!("Local repository '{repository}' created.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::insert_repository_include;
+
+    const INCLUDE: &str = "Include = /etc/pacman.d/test-host";
+
+    #[test]
+    fn inserts_before_first_active_official_testing_repository() {
+        let config = "# header\n[options]\nColor\n\n# repos\n#[core]\n[core-testing]\nInclude = mirrorlist\n";
+
+        assert_eq!(
+            insert_repository_include(config, INCLUDE),
+            "# header\n[options]\nColor\n\n# repos\n#[core]\nInclude = /etc/pacman.d/test-host\n[core-testing]\nInclude = mirrorlist\n"
+        );
+    }
+
+    #[test]
+    fn inserts_before_first_unstable_repository() {
+        let config = "[options]\nColor\n[kde-unstable]\nInclude = mirrorlist\n[core-testing]\n";
+
+        assert_eq!(
+            insert_repository_include(config, INCLUDE),
+            "[options]\nColor\nInclude = /etc/pacman.d/test-host\n[kde-unstable]\nInclude = mirrorlist\n[core-testing]\n"
+        );
+    }
+
+    #[test]
+    fn skips_custom_repository_and_inserts_before_first_official_repository() {
+        let config = "[options]\nColor\n[my-custom]\nServer = file:///packages\n[extra]\nInclude = mirrorlist\n";
+
+        assert_eq!(
+            insert_repository_include(config, INCLUDE),
+            "[options]\nColor\n[my-custom]\nServer = file:///packages\nInclude = /etc/pacman.d/test-host\n[extra]\nInclude = mirrorlist\n"
+        );
+    }
+
+    #[test]
+    fn ignores_staging_repositories() {
+        let config = "[options]\nColor\n[core-staging]\nInclude = mirrorlist\n[core]\nInclude = mirrorlist\n";
+
+        assert_eq!(
+            insert_repository_include(config, INCLUDE),
+            "[options]\nColor\n[core-staging]\nInclude = mirrorlist\nInclude = /etc/pacman.d/test-host\n[core]\nInclude = mirrorlist\n"
+        );
+    }
+
+    #[test]
+    fn appends_when_no_official_repository_exists() {
+        let config = "[options]\nColor\n[my-custom]\nServer = file:///packages\n";
+
+        assert_eq!(
+            insert_repository_include(config, INCLUDE),
+            "[options]\nColor\n[my-custom]\nServer = file:///packages\nInclude = /etc/pacman.d/test-host\n"
+        );
+    }
+
+    #[test]
+    fn preserves_crlf_line_endings() {
+        let config = "[options]\r\nColor\r\n[core]\r\nInclude = mirrorlist\r\n";
+
+        assert_eq!(
+            insert_repository_include(config, INCLUDE),
+            "[options]\r\nColor\r\nInclude = /etc/pacman.d/test-host\r\n[core]\r\nInclude = mirrorlist\r\n"
+        );
+    }
 }
