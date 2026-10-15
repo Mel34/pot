@@ -10,7 +10,7 @@ mod prepare;
 mod proc;
 mod repository;
 mod startup;
-mod sudo;
+mod helper;
 mod term;
 mod ui;
 mod worker;

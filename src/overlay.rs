@@ -1,8 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::Duration;
 
-use crate::sudo;
 
 pub struct Overlay {
     pub merged: PathBuf,
@@ -11,50 +8,9 @@ pub struct Overlay {
 
 impl Overlay {
     pub fn mount(lower: &Path, overlay_root: &Path) -> Result<Self, String> {
-        let upper = overlay_root.join("upper");
-        let work = overlay_root.join("work");
         let merged = overlay_root.join("merged");
 
-        for path in [lower, &upper, &work] {
-            let text = path.to_string_lossy();
-
-            if text.contains([',', ':', '\\']) {
-                return Err(format!(
-                    "path '{text}' contains a character (',' ':' or '\\') that OverlayFS mount options cannot express"
-                ));
-            }
-        }
-
-        for directory in [&upper, &work] {
-            if directory.exists() {
-                if let Err(_) = std::fs::remove_dir_all(directory) {
-                    let _ = sudo::run(["rm".as_ref(), "-rf".as_ref(), directory.as_os_str()]);
-                }
-            }
-        }
-
-        for directory in [&upper, &work, &merged] {
-            std::fs::create_dir_all(directory)
-                .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
-        }
-
-        let options = format!(
-            "lowerdir={},upperdir={},workdir={},index=off",
-            lower.display(),
-            upper.display(),
-            work.display()
-        );
-
-        sudo::run([
-            "mount".as_ref(),
-            "-t".as_ref(),
-            "overlay".as_ref(),
-            "overlay".as_ref(),
-            "-o".as_ref(),
-            std::ffi::OsStr::new(&options),
-            merged.as_os_str(),
-        ])
-        .map_err(|error| format!("failed to mount OverlayFS: {error}"))?;
+        crate::helper::mount_overlay(lower, overlay_root)?;
 
         Ok(Self {
             merged,
@@ -88,21 +44,7 @@ impl Drop for Overlay {
 /// `umount`, retrying once and finally falling back to a lazy unmount so that
 /// a straggling process cannot leave a stale mount behind.
 pub fn unmount_path(path: &Path) -> Result<(), String> {
-    let first = sudo::run(["umount".as_ref(), path.as_os_str()]);
-
-    if first.is_ok() {
-        return Ok(());
-    }
-
-    thread::sleep(Duration::from_secs(1));
-
-    if sudo::run(["umount".as_ref(), path.as_os_str()]).is_ok() {
-        return Ok(());
-    }
-
-    sudo::run(["umount".as_ref(), "-l".as_ref(), path.as_os_str()])
-        .map(|_| ())
-        .map_err(|error| format!("{error} (initially: {})", first.unwrap_err()))
+    crate::helper::unmount_overlay(path)
 }
 
 /// Whether something is mounted exactly at `path`.

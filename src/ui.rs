@@ -20,7 +20,7 @@ use crate::cookbook::{PatchStatus, Recipe};
 use crate::prepare::{self, PrepState};
 use crate::proc::Chunk;
 use crate::term::TerminalGuard;
-use crate::worker::{CookReq, Op, PrepareReq, VerifyReq, WorkerCommand, WorkerEvent};
+use crate::worker::{CookReq, InstallReq, Op, PrepareReq, VerifyReq, WorkerCommand, WorkerEvent};
 
 #[derive(Clone, Copy)]
 enum MenuItem {
@@ -33,6 +33,7 @@ enum WorkerStatus {
     Preparing,
     Resetting,
     Cooking,
+    Installing,
 }
 
 fn middle_truncate(name: &str, max_width: usize) -> String {
@@ -326,6 +327,10 @@ fn draw(
                             .as_deref()
                             .map(|status| format!("[{status}]"))
                             .unwrap_or_else(|| "[cooking]".to_owned()),
+                        Some(WorkerStatus::Installing) => cook_status[*recipe_index]
+                            .as_deref()
+                            .map(|status| format!("[{status}]"))
+                            .unwrap_or_else(|| "[installing]".to_owned()),
                         None if cooking_recipe.is_some() => {
                             "[please wait, cook in progress]".to_owned()
                         }
@@ -412,6 +417,12 @@ fn draw(
                     Paragraph::new(
                         "[↑↓] Navigate    [a] Abort    [l/Enter] Live Log    [Space] Select    [q] Quit",
                     )
+                } else if cook_status[*recipe_index].as_deref() == Some("[cooked successfully]")
+                    || cook_status[*recipe_index].as_deref() == Some("[installed]")
+                {
+                    Paragraph::new(
+                        "[↑↓] Navigate    [Enter] Install    [c] Cook    [r] Reset    [l] Logs    [Space] Select    [q] Quit",
+                    )
                 } else if prepare::state(cache_dir, &recipes[*recipe_index].name) == PrepState::Ready {
                     Paragraph::new(
                         "[↑↓] Navigate    [Enter] Cook    [r] Reset    [l] Logs    [Space] Select    [q] Quit",
@@ -441,7 +452,6 @@ pub fn run(
     _cookbook_dir: &Path,
 ) -> io::Result<()> {
     let worker = crate::worker::start(env.clone())?;
-    crate::sudo::spawn_keepalive(|| {});
     let mut guard = TerminalGuard::enter()?;
 
     let mut expanded = vec![false; recipes.len()];
@@ -461,6 +471,7 @@ pub fn run(
                         Op::Prepare => Some(WorkerStatus::Preparing),
                         Op::Reset => Some(WorkerStatus::Resetting),
                         Op::Cook => Some(WorkerStatus::Cooking),
+                        Op::Install => Some(WorkerStatus::Installing),
                     };
                 }
 
@@ -525,6 +536,21 @@ pub fn run(
                         Err(error) => {
                             worker_status[recipe_index] = None;
                             cook_status[recipe_index] = Some(format!("[cook failed: {error}]"));
+                        }
+                    }
+                }
+
+                WorkerEvent::Installed {
+                    recipe_index,
+                    result,
+                } => {
+                    worker_status[recipe_index] = None;
+                    match result {
+                        Ok(()) => {
+                            cook_status[recipe_index] = Some("[installed]".to_owned());
+                        }
+                        Err(error) => {
+                            cook_status[recipe_index] = Some(format!("[install failed: {error}]"));
                         }
                     }
                 }
@@ -657,30 +683,31 @@ pub fn run(
 
                         KeyCode::Enter => match menu_items.get(selected) {
                             Some(&MenuItem::Recipe(recipe_index)) => {
-                                if worker_status[recipe_index] == Some(WorkerStatus::Cooking) {
+                                if worker_status[recipe_index] == Some(WorkerStatus::Cooking)
+                                    || worker_status[recipe_index] == Some(WorkerStatus::Installing)
+                                {
                                     viewing_log = Some(recipe_index);
                                     auto_scroll = true;
                                     continue;
                                 }
 
-                                if worker_status.iter().any(|s| matches!(s, Some(WorkerStatus::Cooking))) {
+                                if worker_status.iter().any(|s| matches!(s, Some(WorkerStatus::Cooking) | Some(WorkerStatus::Installing))) {
                                     continue;
                                 }
 
                                 let recipe = &recipes[recipe_index];
                                 let is_prepared = prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready;
 
-                                if is_prepared {
-                                    if !crate::sudo::credentials_valid() {
-                                        guard.suspend()?;
-                                        let auth_result = crate::sudo::authenticate();
-                                        guard.resume()?;
-                                        if let Err(error) = auth_result {
-                                            cook_status[recipe_index] = Some(format!("[sudo: {error}]"));
-                                            continue;
-                                        }
-                                    }
-
+                                if cook_status[recipe_index].as_deref() == Some("[cooked successfully]")
+                                    || cook_status[recipe_index].as_deref() == Some("[installed]")
+                                {
+                                    worker
+                                        .send(WorkerCommand::Install(InstallReq {
+                                            recipe_index,
+                                            recipe_name: recipe.name.clone(),
+                                        }))
+                                        .map_err(|_| io::Error::other("worker send failed"))?;
+                                } else if is_prepared {
                                     let patches = recipe
                                         .patches
                                         .iter()
@@ -739,6 +766,34 @@ pub fn run(
 
                             None => {}
                         },
+
+                        KeyCode::Char('c') => {
+                            if let Some(&MenuItem::Recipe(recipe_index)) = menu_items.get(selected) {
+                                if worker_status.iter().any(|s| matches!(s, Some(WorkerStatus::Cooking) | Some(WorkerStatus::Installing))) {
+                                    continue;
+                                }
+
+                                let recipe = &recipes[recipe_index];
+                                let is_prepared = prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready;
+
+                                if is_prepared {
+                                    let patches = recipe
+                                        .patches
+                                        .iter()
+                                        .filter(|patch| patch.selected)
+                                        .map(|patch| patch.path.clone())
+                                        .collect();
+
+                                    worker
+                                        .send(WorkerCommand::Cook(CookReq {
+                                            recipe_index,
+                                            recipe_name: recipe.name.clone(),
+                                            patches,
+                                        }))
+                                        .map_err(|_| io::Error::other("worker send failed"))?;
+                                }
+                            }
+                        }
 
                         KeyCode::Char('r') => {
                             if let Some(&MenuItem::Recipe(recipe_index)) = menu_items.get(selected) {

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+"http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>POT - Pkgbuild Overlay Tool</vendor>
+  <vendor_url>https://github.com/Mel34/pot</vendor_url>
+  <action id="org.archlinux.pot.helper">
+    <description>Run POT helper for overlay and package repository management</description>
+    <message>Authentication is required to run POT system operations</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/pot/pot-helper</annotate>
+  </action>
+</policyconfig>

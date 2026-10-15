@@ -164,6 +164,7 @@ fn insert_repository_include(contents: &str, include: &str) -> String {
     updated
 }
 
+#[allow(dead_code)]
 fn ensure_pacman_conf(repository: &str) -> Result<(), String> {
     let path = PathBuf::from("/etc/pacman.conf");
     let include = format!("Include = /etc/pacman.d/{repository}");
@@ -205,8 +206,6 @@ pub fn ensure_confirmed(repository: &str) -> Result<(), String> {
 }
 
 fn ensure_inner(repository: &str, confirmed: bool) -> Result<(), String> {
-    ensure_pacman_conf(repository)?;
-
     let config_path = config_path(repository);
 
     if config_path.exists() {
@@ -237,51 +236,10 @@ fn ensure_inner(repository: &str, confirmed: bool) -> Result<(), String> {
         )?;
     }
 
-    let repository_dir = PathBuf::from("/var/cache/pacman").join(repository);
-
-    interactive(
-        Command::new("sudo").args(["mkdir", "-p"]).arg(&repository_dir),
-        "sudo mkdir",
-    )?;
-
     let uid = Uid::effective().as_raw();
+    crate::helper::setup_repository(repository, uid)?;
 
-    interactive(
-        Command::new("sudo")
-            .args(["chown", &format!("{uid}:{uid}")])
-            .arg(&repository_dir),
-        "sudo chown",
-    )?;
-
-    let config = format!(
-        "[options]\n\
-         CacheDir = {}\n\
-         CleanMethod = KeepCurrent\n\
-         \n\
-         [{repository}]\n\
-         SigLevel = Optional TrustAll\n\
-         Server = file://{}\n",
-        repository_dir.display(),
-        repository_dir.display()
-    );
-
-    let temp_path = std::env::temp_dir().join(format!("pot-repository-{repository}"));
-
-    std::fs::write(&temp_path, config)
-        .map_err(|error| format!("failed to create temporary repository configuration: {error}"))?;
-
-    let result = interactive(
-        Command::new("sudo")
-            .args(["install", "-m", "644"])
-            .arg(&temp_path)
-            .arg(&config_path),
-        "sudo install (repository configuration)",
-    );
-
-    let _ = std::fs::remove_file(&temp_path);
-
-    result?;
-
+    let repository_dir = PathBuf::from("/var/cache/pacman").join(repository);
     let database = repository_dir.join(format!("{repository}.db.tar.gz"));
 
     interactive(Command::new("repo-add").arg(&database), "repo-add")?;

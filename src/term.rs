@@ -42,18 +42,7 @@ impl TerminalGuard {
         &mut self.terminal
     }
 
-    /// Temporarily restore normal terminal mode so sudo can prompt interactively.
-    pub fn suspend(&mut self) -> io::Result<()> {
-        restore();
-        Ok(())
-    }
 
-    /// Re-enter TUI raw mode and alternate screen.
-    pub fn resume(&mut self) -> io::Result<()> {
-        enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
-        self.terminal.clear()
-    }
 
 
 }

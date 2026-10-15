@@ -60,6 +60,7 @@ pub enum Op {
     Prepare,
     Reset,
     Cook,
+    Install,
 }
 
 /// Everything the background jobs need to know about the installation.
@@ -140,6 +141,12 @@ pub struct CookReq {
     pub patches: Vec<PathBuf>,
 }
 
+#[derive(Clone)]
+pub struct InstallReq {
+    pub recipe_index: usize,
+    pub recipe_name: String,
+}
+
 pub enum WorkerCommand {
     /// Prepare (or, with `reset`, re-prepare) a recipe and then verify the
     /// given patches against the result.
@@ -149,6 +156,7 @@ pub enum WorkerCommand {
     },
     Verify(VerifyReq),
     Cook(CookReq),
+    Install(InstallReq),
     /// Cancel whatever is running or queued for this recipe.
     Abort {
         recipe_index: usize,
@@ -178,6 +186,10 @@ pub enum WorkerEvent {
         result: Result<(), JobError>,
         #[allow(dead_code)]
         overlay: Option<Overlay>,
+    },
+    Installed {
+        recipe_index: usize,
+        result: Result<(), JobError>,
     },
     /// Something the user should know that is not tied to a recipe.
     #[allow(dead_code)]
@@ -304,6 +316,7 @@ pub enum Action {
     Prepare(PrepareReq),
     Verify(VerifyReq),
     Cook(CookReq),
+    Install(InstallReq),
     AbortCook,
     AbortPrepare,
     Emit(WorkerEvent),
@@ -386,6 +399,29 @@ impl Scheduler {
                 } else {
                     self.active_cook = Some(request.recipe_index);
                     vec![Action::Cook(request)]
+                }
+            }
+
+            WorkerCommand::Install(request) => {
+                if let Some(running) = self.active_cook {
+                    let message = if running == request.recipe_index {
+                        "this recipe is already being processed"
+                    } else {
+                        "another operation is in progress; wait or abort it first"
+                    };
+
+                    vec![Action::Emit(WorkerEvent::Installed {
+                        recipe_index: request.recipe_index,
+                        result: Err(message.into()),
+                    })]
+                } else if self.preparing(request.recipe_index) {
+                    vec![Action::Emit(WorkerEvent::Installed {
+                        recipe_index: request.recipe_index,
+                        result: Err("sources are still being prepared".into()),
+                    })]
+                } else {
+                    self.active_cook = Some(request.recipe_index);
+                    vec![Action::Install(request)]
                 }
             }
 
@@ -555,8 +591,13 @@ pub fn start(env: Env) -> io::Result<Worker> {
     let (events_tx, events_rx) = mpsc::channel::<WorkerEvent>();
 
     let (prepare_tx, prepare_rx) = mpsc::channel::<PrepareReq>();
+    enum CookTask {
+        Cook(CookReq),
+        Install(InstallReq),
+    }
+
     let (verify_tx, verify_rx) = mpsc::channel::<VerifyReq>();
-    let (cook_tx, cook_rx) = mpsc::channel::<CookReq>();
+    let (cook_tx, cook_rx) = mpsc::channel::<CookTask>();
 
     let flags = Flags::default();
 
@@ -584,8 +625,11 @@ pub fn start(env: Env) -> io::Result<Worker> {
         let (env, events, msgs, flags) = (env.clone(), events_tx.clone(), msgs_tx.clone(), flags.clone());
 
         spawn_named("pot-cook", move || {
-            for request in cook_rx {
-                run_cook(&env, &request, &events, &msgs, &flags);
+            for task in cook_rx {
+                match task {
+                    CookTask::Cook(request) => run_cook(&env, &request, &events, &msgs, &flags),
+                    CookTask::Install(request) => run_install(&env, &request, &events, &msgs, &flags),
+                }
             }
         })?
     };
@@ -623,7 +667,11 @@ pub fn start(env: Env) -> io::Result<Worker> {
                         }
                         Action::Cook(request) => {
                             flags.cook_abort.store(false, Ordering::Relaxed);
-                            let _ = cook_tx.send(request);
+                            let _ = cook_tx.send(CookTask::Cook(request));
+                        }
+                        Action::Install(request) => {
+                            flags.cook_abort.store(false, Ordering::Relaxed);
+                            let _ = cook_tx.send(CookTask::Install(request));
                         }
                         Action::AbortCook => flags.cook_abort.store(true, Ordering::Relaxed),
                         Action::AbortPrepare => flags.prepare_abort.store(true, Ordering::Relaxed),
@@ -736,6 +784,42 @@ fn run_verify(env: &Env, request: &VerifyReq, events: &Sender<WorkerEvent>) {
     });
 }
 
+fn run_install(
+    env: &Env,
+    request: &InstallReq,
+    events: &Sender<WorkerEvent>,
+    msgs: &Sender<Msg>,
+    flags: &Flags,
+) {
+    let _ = events.send(WorkerEvent::Started {
+        recipe_index: request.recipe_index,
+        op: Op::Install,
+    });
+
+    let reporter = Reporter::new(
+        events.clone(),
+        request.recipe_index,
+        &env.log_path(&request.recipe_name, "install"),
+        &format!("Installing {}", request.recipe_name),
+    );
+
+    let cancel = || flags.shutdown.load(Ordering::Relaxed) || flags.cook_abort.load(Ordering::Relaxed);
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        crate::kitchen::install(&request.recipe_name, &reporter, &cancel)
+    }))
+    .unwrap_or_else(|payload| Err(JobError::Failed(format!("internal error: {}", panic_message(&payload)))));
+
+    reporter.finish(&result);
+
+    let _ = events.send(WorkerEvent::Installed {
+        recipe_index: request.recipe_index,
+        result,
+    });
+
+    let _ = msgs.send(Msg::CookDone);
+}
+
 fn run_cook(
     env: &Env,
     request: &CookReq,
@@ -819,6 +903,7 @@ mod tests {
                 Action::Prepare(request) => format!("prepare {}", request.recipe_index),
                 Action::Verify(request) => format!("verify {}/{}", request.recipe_index, request.patch_index),
                 Action::Cook(request) => format!("cook {}", request.recipe_index),
+                Action::Install(request) => format!("install {}", request.recipe_index),
                 Action::AbortCook => "abort-cook".to_owned(),
                 Action::AbortPrepare => "abort-prepare".to_owned(),
                 Action::Emit(WorkerEvent::Prepared { recipe_index, result }) => {
@@ -826,6 +911,9 @@ mod tests {
                 }
                 Action::Emit(WorkerEvent::Cooked { recipe_index, result, .. }) => {
                     format!("cooked {recipe_index} ok={}", result.is_ok())
+                }
+                Action::Emit(WorkerEvent::Installed { recipe_index, result }) => {
+                    format!("installed {recipe_index} ok={}", result.is_ok())
                 }
                 Action::Emit(WorkerEvent::Verified { recipe_index, patch_index, status, .. }) => {
                     format!("verified {recipe_index}/{patch_index} {status:?}")

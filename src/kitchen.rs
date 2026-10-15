@@ -12,7 +12,6 @@ use crate::overlay::{self, Overlay};
 use crate::patch::{self, Verification};
 use crate::prepare::{self, PrepState};
 use crate::repository;
-use crate::sudo;
 use crate::worker::{CookReq, Env, JobError, Reporter};
 
 fn check_cancelled(cancel: &dyn Fn() -> bool) -> Result<(), JobError> {
@@ -99,16 +98,9 @@ pub fn cook(
 
     rep.phase("syncing the pacman database");
 
-    let config = repository::config_path(&env.repository_name);
-
     rep.run(
-        "sudo pacman -Sy",
-        &mut sudo::command([
-            "pacman".as_ref(),
-            "--config".as_ref(),
-            config.as_os_str(),
-            "-Sy".as_ref(),
-        ]),
+        "syncing the pacman database",
+        &mut crate::helper::sync_packages_command(&env.repository_name),
         cancel,
     )?;
 
@@ -255,4 +247,20 @@ fn publish_packages(
     }
 
     Ok(packages)
+}
+
+pub fn install(
+    package_name: &str,
+    rep: &Reporter,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(), JobError> {
+    rep.phase("installing package");
+
+    rep.run(
+        "pacman -S",
+        &mut crate::helper::install_package_command(package_name),
+        cancel,
+    )?;
+
+    Ok(())
 }
