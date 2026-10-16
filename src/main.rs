@@ -12,6 +12,7 @@ mod repository;
 mod startup;
 mod helper;
 mod term;
+mod theme;
 mod ui;
 mod worker;
 

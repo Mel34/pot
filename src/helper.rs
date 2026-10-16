@@ -79,6 +79,10 @@ pub fn setup_repository(repository: &str, uid: u32) -> Result<(), String> {
     run("setup-repository", [OsStr::new(repository), OsStr::new(&uid_str)])
 }
 
+pub fn sync_packages(repository: &str) -> Result<(), String> {
+    run("sync-packages", [OsStr::new(repository)])
+}
+
 pub fn sync_packages_command(repository: &str) -> Command {
     command("sync-packages", [repository])
 }
