@@ -70,13 +70,9 @@ pub fn cook(
 
     check_cancelled(cancel)?;
 
-    rep.phase("building (makepkg)");
+    rep.phase("preparing patched sources and building (makepkg)");
 
-    rep.run(
-        "makepkg",
-        Command::new("makepkg").args(["-e", "--nocheck"]).current_dir(&merged),
-        cancel,
-    )?;
+    run_makepkg_with_prepare(&merged, rep, cancel)?;
 
     check_cancelled(cancel)?;
 
@@ -123,6 +119,54 @@ fn remove_stale_packages(work_dir: &Path, rep: &Reporter) -> Result<(), JobError
                 .map_err(|error| format!("cannot remove stale package {}: {error}", path.display()))?;
         }
     }
+
+    Ok(())
+}
+
+fn run_makepkg_with_prepare(
+    merged: &Path,
+    rep: &Reporter,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(), JobError> {
+    let script_name = format!(".PKGBUILD.pot-{}", std::process::id());
+    let script_path = merged.join(&script_name);
+
+    let script = r#"source "$PWD/PKGBUILD"
+
+if ! declare -F build >/dev/null; then
+    printf '%s\n' 'POT: original PKGBUILD has no build() function' >&2
+    return 1
+fi
+
+_pot_build_definition=$(declare -f build)
+eval "${_pot_build_definition/#build/_pot_original_build}"
+unset _pot_build_definition
+
+build() {
+    if declare -F prepare >/dev/null; then
+        prepare
+    fi
+    cd "$srcdir"
+    _pot_original_build
+}
+"#;
+
+    std::fs::write(&script_path, script)
+        .map_err(|error| format!("cannot write {}: {error}", script_path.display()))?;
+
+    let result = rep.run(
+        "makepkg",
+        Command::new("makepkg")
+            .args(["-e", "--nocheck", "--holdver", "-p"])
+            .arg(&script_name)
+            .current_dir(merged),
+        cancel,
+    );
+
+    let cleanup = std::fs::remove_file(&script_path);
+
+    result?;
+    cleanup.map_err(|error| format!("cannot remove {}: {error}", script_path.display()))?;
 
     Ok(())
 }

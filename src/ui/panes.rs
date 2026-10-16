@@ -88,9 +88,9 @@ fn draw_left_pane(
     artifacts: &[Option<String>],
 ) {
     let border_style = if is_active {
-        Style::default().fg(NC_CYAN)
-    } else {
         Style::default().fg(NC_WHITE)
+    } else {
+        Style::default().fg(NC_CYAN)
     };
 
     let title_line = Line::from(vec![
@@ -144,7 +144,9 @@ fn draw_left_pane(
                 Some(UiWorkerStatus::Cooking) => "[cooking]".to_owned(),
                 Some(UiWorkerStatus::Installing) => "[install]".to_owned(),
                 None if cook_status[idx].as_deref() == Some("[installed]") => "[installed]".to_owned(),
+                None if cook_status[idx].as_deref().is_some_and(|s| s.contains("install failed")) => "[failed]".to_owned(),
                 None if cook_status[idx].as_deref() == Some("[cooked successfully]") => "[cooked]".to_owned(),
+                None if artifacts[idx].is_some() => "[cooked]".to_owned(),
                 None if cook_status[idx].as_deref().is_some_and(|s| s.contains("failed")) => "[failed]".to_owned(),
                 None if is_prepared => "[ready]".to_owned(),
                 None => "[unprep]".to_owned(),
@@ -249,9 +251,9 @@ fn draw_right_pane(
     auto_scroll: bool,
 ) {
     let border_style = if is_active {
-        Style::default().fg(NC_CYAN)
-    } else {
         Style::default().fg(NC_WHITE)
+    } else {
+        Style::default().fg(NC_CYAN)
     };
 
     let recipe = recipes.get(recipe_cursor);

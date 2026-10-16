@@ -384,6 +384,23 @@ fn run_sync_packages(repository: &str) -> Result<(), String> {
 fn run_install_package(package: &str) -> Result<(), String> {
     validate_repository_name(package)?;
 
+    // Purge any stale cached archive from the global pacman cache to prevent
+    // pacman / libalpm from failing with a checksum mismatch against an older build.
+    let pkg_cache = Path::new("/var/cache/pacman/pkg");
+    if let Ok(entries) = fs::read_dir(pkg_cache) {
+        let prefix = format!("{package}-");
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with(&prefix)
+                    && (name.ends_with(".pkg.tar.zst") || name.ends_with(".pkg.tar.xz"))
+                {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
     let status = Command::new("pacman")
         .args(["-S", "--noconfirm", package])
         .status()

@@ -194,7 +194,8 @@ pub fn run(
         let enter_label = match active_pane {
             ActivePane::Left => {
                 if let Some(recipe) = recipes.get(recipe_cursor) {
-                    if cook_status[recipe_cursor].as_deref() == Some("[cooked successfully]")
+                    if artifacts.get(recipe_cursor).and_then(|a| a.as_ref()).is_some()
+                        || cook_status[recipe_cursor].as_deref() == Some("[cooked successfully]")
                         || cook_status[recipe_cursor].as_deref() == Some("[installed]")
                     {
                         "Install"
@@ -351,7 +352,8 @@ pub fn run(
 
                                     let is_prepared = prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready;
 
-                                    if cook_status[recipe_cursor].as_deref() == Some("[cooked successfully]")
+                                    if artifacts.get(recipe_cursor).and_then(|a| a.as_ref()).is_some()
+                                        || cook_status[recipe_cursor].as_deref() == Some("[cooked successfully]")
                                         || cook_status[recipe_cursor].as_deref() == Some("[installed]")
                                     {
                                         worker
