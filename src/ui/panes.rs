@@ -144,6 +144,7 @@ fn draw_left_pane(
                 Some(UiWorkerStatus::Resetting) => "[reset]".to_owned(),
                 Some(UiWorkerStatus::Cooking) => "[cooking]".to_owned(),
                 Some(UiWorkerStatus::Installing) => "[install]".to_owned(),
+                None if cook_status[idx].as_deref() == Some("[update]") => "[update]".to_owned(),
                 None if cook_status[idx].as_deref() == Some("[installed]") => {
                     "[installed]".to_owned()
                 }
