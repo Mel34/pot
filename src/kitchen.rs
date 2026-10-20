@@ -148,9 +148,6 @@ eval "${_pot_build_definition/#build/_pot_original_build}"
 unset _pot_build_definition
 
 build() {
-    if declare -F prepare >/dev/null; then
-        prepare
-    fi
     cd "$srcdir"
     _pot_original_build
 }
