@@ -85,6 +85,98 @@ fn parse_print_format(output: &str, package: &str) -> Option<Resolved> {
     })
 }
 
+/// Read the package version fields from `.SRCINFO`.
+///
+/// The returned version is formatted for Arch's `vercmp`:
+/// `epoch:pkgver-pkgrel`.
+fn parse_srcinfo_version(srcinfo: &str) -> Result<String, String> {
+    let mut epoch: Option<&str> = None;
+    let mut pkgver: Option<&str> = None;
+    let mut pkgrel: Option<&str> = None;
+
+    for line in srcinfo.lines() {
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+
+        let key = key.trim();
+        let value = value.trim();
+
+        let slot = match key {
+            "epoch" => &mut epoch,
+            "pkgver" => &mut pkgver,
+            "pkgrel" => &mut pkgrel,
+            _ => continue,
+        };
+
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
+            return Err(format!("invalid empty or whitespace-containing {key}"));
+        }
+
+        if slot.replace(value).is_some() {
+            return Err(format!("duplicate {key} field"));
+        }
+    }
+
+    let pkgver = pkgver.ok_or_else(|| "missing pkgver field".to_owned())?;
+    let pkgrel = pkgrel.ok_or_else(|| "missing pkgrel field".to_owned())?;
+    let epoch = epoch.unwrap_or("0");
+
+    Ok(format!("{epoch}:{pkgver}-{pkgrel}"))
+}
+
+/// Classify a cached version against the official repository version.
+#[derive(Debug, PartialEq, Eq)]
+enum VersionStatus {
+    UpdateAvailable,
+    Current,
+    CachedNewer,
+}
+
+fn classify_version_comparison(comparison: i32) -> VersionStatus {
+    match comparison.cmp(&0) {
+        std::cmp::Ordering::Less => VersionStatus::UpdateAvailable,
+        std::cmp::Ordering::Equal => VersionStatus::Current,
+        std::cmp::Ordering::Greater => VersionStatus::CachedNewer,
+    }
+}
+
+/// Compare two Arch package versions with `vercmp`.
+///
+/// The result is negative when `cached` is older, zero when equal,
+/// and positive when `cached` is newer than `official`.
+fn compare_versions(cached: &str, official: &str) -> Result<i32, String> {
+    let result = proc::capture(Command::new("vercmp").args([cached, official]))
+        .map_err(|error| error.to_string())?;
+
+    parse_vercmp_result(&result)
+}
+
+fn parse_vercmp_result(result: &proc::Captured) -> Result<i32, String> {
+    if !result.success {
+        return Err(format!("vercmp failed: {}", result.error_line()));
+    }
+
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    if lines.len() != 1 || lines[0].trim().is_empty() {
+        return Err(format!(
+            "vercmp returned unexpected output: {:?}",
+            result.stdout
+        ));
+    }
+
+    let output = lines[0].trim();
+    output
+        .parse::<i32>()
+        .map_err(|_| format!("vercmp returned invalid output: {output:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +197,99 @@ extra nautilus 1:47.1-2
                 version: "1:47.1-2".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn parses_srcinfo_version_without_epoch() {
+        let srcinfo = "pkgbase = example\npkgver = 2.4.1\npkgrel = 3\n";
+
+        assert_eq!(
+            parse_srcinfo_version(srcinfo),
+            Ok("0:2.4.1-3".to_owned())
+        );
+    }
+
+    #[test]
+    fn parses_srcinfo_version_with_epoch_and_ignores_other_fields() {
+        let srcinfo = "# generated file\npkgbase = example\nepoch = 2\npkgver = 1.0\npkgrel = 1\narch = any\n";
+
+        assert_eq!(
+            parse_srcinfo_version(srcinfo),
+            Ok("2:1.0-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_missing_empty_and_duplicate_version_fields() {
+        assert!(parse_srcinfo_version("pkgrel = 1\n").is_err());
+        assert!(parse_srcinfo_version("pkgver = 1.0\n").is_err());
+        assert!(parse_srcinfo_version("pkgver =\npkgrel = 1\n").is_err());
+        assert!(parse_srcinfo_version("pkgver = 1.0\npkgver = 2.0\npkgrel = 1\n").is_err());
+        assert!(parse_srcinfo_version("pkgver = 1.0\npkgrel = 1\npkgrel = 2\n").is_err());
+        assert!(parse_srcinfo_version("epoch = 1\nepoch = 2\npkgver = 1.0\npkgrel = 1\n").is_err());
+    }
+
+    #[test]
+    fn classifies_version_comparison() {
+        assert_eq!(
+            classify_version_comparison(-1),
+            VersionStatus::UpdateAvailable
+        );
+        assert_eq!(
+            classify_version_comparison(0),
+            VersionStatus::Current
+        );
+        assert_eq!(
+            classify_version_comparison(1),
+            VersionStatus::CachedNewer
+        );
+        assert_eq!(
+            classify_version_comparison(-42),
+            VersionStatus::UpdateAvailable
+        );
+        assert_eq!(
+            classify_version_comparison(42),
+            VersionStatus::CachedNewer
+        );
+    }
+
+    fn captured(success: bool, stdout: &str, stderr: &str) -> proc::Captured {
+        proc::Captured {
+            success,
+            code: Some(if success { 0 } else { 1 }),
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+        }
+    }
+
+    #[test]
+    fn parses_valid_vercmp_results() {
+        assert_eq!(parse_vercmp_result(&captured(true, "-1\n", "")), Ok(-1));
+        assert_eq!(parse_vercmp_result(&captured(true, "0\n", "")), Ok(0));
+        assert_eq!(parse_vercmp_result(&captured(true, "1\n", "")), Ok(1));
+    }
+
+    #[test]
+    fn rejects_unexpected_vercmp_output() {
+        for output in ["", "\n", "0\n1\n"] {
+            assert!(
+                parse_vercmp_result(&captured(true, output, "")).is_err(),
+                "should reject output {output:?}"
+            );
+        }
+
+        let error = parse_vercmp_result(&captured(true, "not-a-number\n", ""))
+            .unwrap_err();
+        assert!(error.contains("invalid output"), "{error}");
+    }
+
+    #[test]
+    fn reports_vercmp_command_failure() {
+        let error = parse_vercmp_result(&captured(false, "", "invalid version\n"))
+            .unwrap_err();
+
+        assert!(error.contains("vercmp failed"), "{error}");
+        assert!(error.contains("invalid version"), "{error}");
     }
 
     #[test]
