@@ -59,6 +59,13 @@ fn update_state_for(result: &Result<VersionStatus, String>) -> UpdateState {
     }
 }
 
+fn should_apply_update_check(state: UpdateState) -> bool {
+    !matches!(
+        state,
+        UpdateState::Refreshing | UpdateState::ReadyToCook | UpdateState::CookFailed
+    )
+}
+
 fn scan_artifact(repo_dir: &Path, recipe_name: &str) -> Option<String> {
     let entries = std::fs::read_dir(repo_dir).ok()?;
     let prefix = format!("{recipe_name}-");
@@ -252,13 +259,15 @@ pub fn run(
                     recipe_index,
                     result,
                 } => {
-                    update_states[recipe_index] = update_state_for(&result);
-                    cook_status[recipe_index] = Some(match result {
-                        Ok(VersionStatus::UpdateAvailable) => "[update]".to_owned(),
-                        Ok(VersionStatus::Current) => "[up to date]".to_owned(),
-                        Ok(VersionStatus::CachedNewer) => "[cached newer]".to_owned(),
-                        Err(error) => format!("[update check failed: {error}]"),
-                    });
+                    if should_apply_update_check(update_states[recipe_index]) {
+                        update_states[recipe_index] = update_state_for(&result);
+                        cook_status[recipe_index] = Some(match result {
+                            Ok(VersionStatus::UpdateAvailable) => "[update]".to_owned(),
+                            Ok(VersionStatus::Current) => "[up to date]".to_owned(),
+                            Ok(VersionStatus::CachedNewer) => "[cached newer]".to_owned(),
+                            Err(error) => format!("[update check failed: {error}]"),
+                        });
+                    }
                 }
 
                 WorkerEvent::Notice(msg) => {
@@ -822,4 +831,24 @@ mod update_state_tests {
         );
     }
 
+    #[test]
+    fn update_checks_do_not_overwrite_active_lifecycle_states() {
+        for state in [
+            UpdateState::Refreshing,
+            UpdateState::ReadyToCook,
+            UpdateState::CookFailed,
+        ] {
+            assert!(!should_apply_update_check(state), "{state:?}");
+        }
+
+        for state in [
+            UpdateState::Unknown,
+            UpdateState::Available,
+            UpdateState::Current,
+            UpdateState::CachedNewer,
+            UpdateState::CheckFailed,
+        ] {
+            assert!(should_apply_update_check(state), "{state:?}");
+        }
+    }
 }
