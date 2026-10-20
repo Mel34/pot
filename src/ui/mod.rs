@@ -501,18 +501,25 @@ pub fn run(
                                 let _ = crate::helper::sync_packages(&env.repository_name);
                             }
                             KeyCode::F(7) => {
-                                if let Some(recipe) = recipes.get(recipe_cursor) {
-                                    if worker_status[recipe_cursor].is_none() {
-                                        cook_status[recipe_cursor] =
-                                            Some("[checking update...]".to_owned());
-
-                                        worker
-                                            .send(WorkerCommand::CheckUpdate(CheckUpdateReq {
-                                                recipe_index: recipe_cursor,
-                                                recipe_name: recipe.name.clone(),
-                                            }))
-                                            .map_err(|_| io::Error::other("worker send failed"))?;
+                                for (index, recipe) in recipes.iter().enumerate() {
+                                    if worker_status[index].is_some()
+                                        || cook_status[index].as_deref()
+                                            == Some("[checking update...]")
+                                    {
+                                        continue;
                                     }
+
+                                    cook_status[index] =
+                                        Some("[checking update...]".to_owned());
+
+                                    worker
+                                        .send(WorkerCommand::CheckUpdate(CheckUpdateReq {
+                                            recipe_index: index,
+                                            recipe_name: recipe.name.clone(),
+                                        }))
+                                        .map_err(|_| {
+                                            io::Error::other("worker send failed")
+                                        })?;
                                 }
                             }
                             KeyCode::F(8) | KeyCode::Char('a') => {
