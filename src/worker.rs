@@ -825,8 +825,7 @@ fn run_update_check(
     msgs: &Sender<Msg>,
 ) {
     let result = catch_unwind(AssertUnwindSafe(|| {
-        crate::package::check_cached_version(
-            &env.work_dir(&request.recipe_name).join(".SRCINFO"),
+        crate::package::check_repository_version(
             &request.recipe_name,
             &env.repository_name,
         )

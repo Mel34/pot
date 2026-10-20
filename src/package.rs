@@ -50,6 +50,28 @@ pub fn resolve(package: &str, local_repository: &str) -> Result<Resolved, String
     })
 }
 
+/// Resolve a package from one specifically named repository.
+fn resolve_from_repository(package: &str, repository: &str) -> Result<Resolved, String> {
+    let target = format!("{repository}/{package}");
+    let result = proc::capture(Command::new("pacman").args([
+        "-Sp",
+        "--print-format",
+        "%r %n %v",
+        &target,
+    ]))
+    .map_err(|error| error.to_string())?;
+
+    if !result.success {
+        return Err(format!(
+            "cannot resolve {target}: {}",
+            result.error_line()
+        ));
+    }
+
+    parse_print_format(&result.stdout, package)
+        .ok_or_else(|| format!("repository '{repository}' returned no version for '{package}'"))
+}
+
 fn sync_repositories(local_repository: &str) -> Result<Vec<String>, String> {
     let result = proc::capture(Command::new("pacman-conf").arg("--repo-list"))
         .map_err(|error| error.to_string())?;
@@ -88,52 +110,6 @@ fn parse_print_format(output: &str, package: &str) -> Option<Resolved> {
     })
 }
 
-/// Read the package version fields from `.SRCINFO`.
-///
-/// The returned version is formatted for Arch's `vercmp`:
-/// `epoch:pkgver-pkgrel`.
-fn parse_srcinfo_version(srcinfo: &str) -> Result<String, String> {
-    let mut epoch: Option<&str> = None;
-    let mut pkgver: Option<&str> = None;
-    let mut pkgrel: Option<&str> = None;
-
-    for line in srcinfo.lines() {
-        let line = line.trim();
-
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-
-        let key = key.trim();
-        let value = value.trim();
-
-        let slot = match key {
-            "epoch" => &mut epoch,
-            "pkgver" => &mut pkgver,
-            "pkgrel" => &mut pkgrel,
-            _ => continue,
-        };
-
-        if value.is_empty() || value.chars().any(char::is_whitespace) {
-            return Err(format!("invalid empty or whitespace-containing {key}"));
-        }
-
-        if slot.replace(value).is_some() {
-            return Err(format!("duplicate {key} field"));
-        }
-    }
-
-    let pkgver = pkgver.ok_or_else(|| "missing pkgver field".to_owned())?;
-    let pkgrel = pkgrel.ok_or_else(|| "missing pkgrel field".to_owned())?;
-    let epoch = epoch.unwrap_or("0");
-
-    Ok(format!("{epoch}:{pkgver}-{pkgrel}"))
-}
-
 /// Classify a cached version against the official repository version.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum VersionStatus {
@@ -150,56 +126,18 @@ fn classify_version_comparison(comparison: i32) -> VersionStatus {
     }
 }
 
-/// Compare a cached recipe's `.SRCINFO` version with the official repository.
-///
-/// This is read-only: it does not alter the cached recipe or its sources.
-pub(crate) fn check_cached_version(
-    srcinfo_path: &std::path::Path,
+/// Compare the package in POT's local repository with the official repositories.
+pub(crate) fn check_repository_version(
     package_name: &str,
     local_repository: &str,
 ) -> Result<VersionStatus, String> {
-    let work_dir = srcinfo_path.parent().ok_or_else(|| {
-        format!(
-            "cannot determine recipe directory from {}",
-            srcinfo_path.display()
-        )
-    })?;
-    let pkgbuild_path = work_dir.join("PKGBUILD");
-
-    if !pkgbuild_path.is_file() {
-        return Err(format!(
-            "cannot read {}: file does not exist",
-            pkgbuild_path.display()
-        ));
-    }
-
-    let generated = proc::capture(
-        Command::new("makepkg")
-            .arg("--printsrcinfo")
-            .current_dir(work_dir),
-    )
-    .map_err(|error| format!("makepkg --printsrcinfo failed: {error}"))?;
-
-    if !generated.success {
-        return Err(format!(
-            "makepkg --printsrcinfo failed: {}",
-            generated.error_line()
-        ));
-    }
-
-    let cached = parse_srcinfo_version(&generated.stdout).map_err(|error| {
-        format!(
-            "invalid generated SRCINFO for {}: {error}",
-            work_dir.display()
-        )
-    })?;
-
+    let local = resolve_from_repository(package_name, local_repository)?;
     let official = resolve(package_name, local_repository)?;
 
-    let comparison = compare_versions(&cached, &official.version).map_err(|error| {
+    let comparison = compare_versions(&local.version, &official.version).map_err(|error| {
         format!(
-            "cannot compare cached version {cached} with official version {}: {error}",
-            official.version
+            "cannot compare local version {} with official version {}: {error}",
+            local.version, official.version
         )
     })?;
 
@@ -256,50 +194,6 @@ extra nautilus 1:47.1-2
                 version: "1:47.1-2".to_owned(),
             })
         );
-    }
-
-    #[test]
-    fn parses_srcinfo_version_without_epoch() {
-        let srcinfo = "pkgbase = example\npkgver = 2.4.1\npkgrel = 3\n";
-
-        assert_eq!(parse_srcinfo_version(srcinfo), Ok("0:2.4.1-3".to_owned()));
-    }
-
-    #[test]
-    fn parses_srcinfo_version_with_epoch_and_ignores_other_fields() {
-        let srcinfo = "# generated file\npkgbase = example\nepoch = 2\npkgver = 1.0\npkgrel = 1\narch = any\n";
-
-        assert_eq!(parse_srcinfo_version(srcinfo), Ok("2:1.0-1".to_owned()));
-    }
-
-    #[test]
-    fn rejects_missing_empty_and_duplicate_version_fields() {
-        assert!(parse_srcinfo_version("pkgrel = 1\n").is_err());
-        assert!(parse_srcinfo_version("pkgver = 1.0\n").is_err());
-        assert!(parse_srcinfo_version("pkgver =\npkgrel = 1\n").is_err());
-        assert!(parse_srcinfo_version("pkgver = 1.0\npkgver = 2.0\npkgrel = 1\n").is_err());
-        assert!(parse_srcinfo_version("pkgver = 1.0\npkgrel = 1\npkgrel = 2\n").is_err());
-        assert!(parse_srcinfo_version("epoch = 1\nepoch = 2\npkgver = 1.0\npkgrel = 1\n").is_err());
-    }
-
-    #[test]
-    fn check_cached_version_reports_missing_srcinfo() {
-        let dir = std::env::temp_dir().join(format!(
-            "pot-check-cached-version-missing-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let srcinfo_path = dir.join(".SRCINFO");
-        let _ = std::fs::remove_file(&srcinfo_path);
-
-        let result = check_cached_version(&srcinfo_path, "example", "pot");
-
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let error = result.unwrap_err();
-        assert!(error.contains("cannot read"), "{error}");
-        assert!(error.contains("PKGBUILD"), "{error}");
     }
 
     #[test]
