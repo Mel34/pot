@@ -82,7 +82,10 @@ pub fn draw_help_dialog(f: &mut Frame) {
         ("F2", "Cook recipe (Left) / Verify all patches (Right)"),
         ("F3", "Toggle Right pane: Patches ⇄ Live Build Log"),
         ("F4", "Reset prepared sources for selected recipe"),
-        ("F5", "Synchronize pacman repository databases"),
+        (
+            "F5",
+            "Refresh databases, then check recipes for available updates",
+        ),
         (
             "F8 / a",
             "Abort active preparation, compilation, or install",

@@ -498,28 +498,34 @@ pub fn run(
                                 }
                             }
                             KeyCode::F(5) => {
-                                let _ = crate::helper::sync_packages(&env.repository_name);
-                            }
-                            KeyCode::F(7) => {
-                                for (index, recipe) in recipes.iter().enumerate() {
-                                    if worker_status[index].is_some()
-                                        || cook_status[index].as_deref()
-                                            == Some("[checking update...]")
-                                    {
-                                        continue;
+                                match crate::helper::sync_packages(&env.repository_name) {
+                                    Ok(()) => {
+                                        for (index, recipe) in recipes.iter().enumerate() {
+                                            if worker_status[index].is_some()
+                                                || cook_status[index].as_deref()
+                                                    == Some("[checking update...]")
+                                            {
+                                                continue;
+                                            }
+
+                                            cook_status[index] =
+                                                Some("[checking update...]".to_owned());
+
+                                            worker
+                                                .send(WorkerCommand::CheckUpdate(CheckUpdateReq {
+                                                    recipe_index: index,
+                                                    recipe_name: recipe.name.clone(),
+                                                }))
+                                                .map_err(|_| {
+                                                    io::Error::other("worker send failed")
+                                                })?;
+                                        }
                                     }
-
-                                    cook_status[index] =
-                                        Some("[checking update...]".to_owned());
-
-                                    worker
-                                        .send(WorkerCommand::CheckUpdate(CheckUpdateReq {
-                                            recipe_index: index,
-                                            recipe_name: recipe.name.clone(),
-                                        }))
-                                        .map_err(|_| {
-                                            io::Error::other("worker send failed")
-                                        })?;
+                                    Err(error) => {
+                                        modal = Some(Modal::Notice(format!(
+                                            "Database refresh failed: {error}"
+                                        )));
+                                    }
                                 }
                             }
                             KeyCode::F(8) | KeyCode::Char('a') => {

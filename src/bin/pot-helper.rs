@@ -377,7 +377,7 @@ fn run_sync_packages(repository: &str) -> Result<(), String> {
     }
 
     let status = Command::new("pacman")
-        .args(["--config", &config_file.to_string_lossy(), "-Sy"])
+        .arg("-Sy")
         .status()
         .map_err(|error| format!("failed to execute pacman: {error}"))?;
 
