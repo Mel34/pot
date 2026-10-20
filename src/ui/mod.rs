@@ -22,7 +22,8 @@ use crate::prepare::{self, PrepState};
 use crate::proc::Chunk;
 use crate::term::TerminalGuard;
 use crate::worker::{
-    CheckUpdateReq, CookReq, InstallReq, Op, PrepareReq, VerifyReq, WorkerCommand, WorkerEvent,
+    CheckUpdateReq, CookReq, InstallReq, Op, PrepareReq, VerifyBatchReq, VerifyReq,
+    WorkerCommand, WorkerEvent,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -699,18 +700,32 @@ pub fn run(
                                 }
                                 KeyCode::F(2) => {
                                     if let Some(recipe) = recipes.get_mut(recipe_cursor) {
-                                        for (p_idx, patch) in recipe.patches.iter_mut().enumerate()
-                                        {
-                                            if patch.selected {
-                                                patch.status = PatchStatus::Checking;
-                                                let req = VerifyReq {
-                                                    recipe_index: recipe_cursor,
-                                                    recipe_name: recipe.name.clone(),
-                                                    patch_index: p_idx,
-                                                    patch_path: patch.path.clone(),
-                                                };
-                                                let _ = worker.send(WorkerCommand::Verify(req));
-                                            }
+                                        let patches = recipe
+                                            .patches
+                                            .iter_mut()
+                                            .enumerate()
+                                            .filter_map(|(patch_index, patch)| {
+                                                if patch.selected {
+                                                    patch.status = PatchStatus::Checking;
+                                                    Some(VerifyReq {
+                                                        recipe_index: recipe_cursor,
+                                                        recipe_name: recipe.name.clone(),
+                                                        patch_index,
+                                                        patch_path: patch.path.clone(),
+                                                    })
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect::<Vec<_>>();
+
+                                        if !patches.is_empty() {
+                                            let request = VerifyBatchReq {
+                                                recipe_index: recipe_cursor,
+                                                recipe_name: recipe.name.clone(),
+                                                patches,
+                                            };
+                                            let _ = worker.send(WorkerCommand::VerifyBatch(request));
                                         }
                                     }
                                 }
