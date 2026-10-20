@@ -225,7 +225,7 @@ pub fn prepare_sources(
     rep.run(
         "makepkg",
         Command::new("makepkg")
-            .args(["-sfeo", "--noconfirm", "--holdver"])
+            .args(["-sfo", "--noconfirm", "--holdver"])
             .current_dir(&work_dir),
         cancel,
     )?;
