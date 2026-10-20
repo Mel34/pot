@@ -9,7 +9,7 @@
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -924,11 +924,48 @@ fn run_verify(env: &Env, request: &VerifyReq, events: &Sender<WorkerEvent>) {
         )
     });
 
+    let detail = outcome.1;
+    let status = outcome.0;
+
+    let log_path = env.log_path(&request.recipe_name, "verify");
+    let log_result = (|| -> io::Result<()> {
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+
+        let result = match status {
+            PatchStatus::Clean => "OK",
+            PatchStatus::Failed => "FAILED",
+            PatchStatus::Unknown => "UNKNOWN",
+            PatchStatus::Checking => "CHECKING",
+        };
+
+        writeln!(
+            file,
+            "[pot] verify {}: {}{}",
+            request.patch_path.display(),
+            result,
+            detail
+                .as_deref()
+                .map(|message| format!(" — {}", message.replace('\n', " ")))
+                .unwrap_or_default()
+        )
+    })();
+
+    if let Err(error) = log_result {
+        eprintln!("pot: could not write verification log: {error}");
+    }
+
     let _ = events.send(WorkerEvent::Verified {
         recipe_index: request.recipe_index,
         patch_index: request.patch_index,
-        status: outcome.0,
-        detail: outcome.1,
+        status,
+        detail,
     });
 }
 
