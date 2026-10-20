@@ -226,6 +226,7 @@ pub fn prepare_sources(
         "makepkg",
         Command::new("makepkg")
             .args(["-sfo", "--noconfirm", "--holdver"])
+            .env("SRCDEST", env.cache_dir.join("git"))
             .current_dir(&work_dir),
         cancel,
     )?;
