@@ -158,11 +158,41 @@ pub(crate) fn check_cached_version(
     package_name: &str,
     local_repository: &str,
 ) -> Result<VersionStatus, String> {
-    let srcinfo = std::fs::read_to_string(srcinfo_path)
-        .map_err(|error| format!("cannot read {}: {error}", srcinfo_path.display()))?;
+    let work_dir = srcinfo_path.parent().ok_or_else(|| {
+        format!(
+            "cannot determine recipe directory from {}",
+            srcinfo_path.display()
+        )
+    })?;
+    let pkgbuild_path = work_dir.join("PKGBUILD");
 
-    let cached = parse_srcinfo_version(&srcinfo)
-        .map_err(|error| format!("invalid {}: {error}", srcinfo_path.display()))?;
+    if !pkgbuild_path.is_file() {
+        return Err(format!(
+            "cannot read {}: file does not exist",
+            pkgbuild_path.display()
+        ));
+    }
+
+    let generated = proc::capture(
+        Command::new("makepkg")
+            .arg("--printsrcinfo")
+            .current_dir(work_dir),
+    )
+    .map_err(|error| format!("makepkg --printsrcinfo failed: {error}"))?;
+
+    if !generated.success {
+        return Err(format!(
+            "makepkg --printsrcinfo failed: {}",
+            generated.error_line()
+        ));
+    }
+
+    let cached = parse_srcinfo_version(&generated.stdout).map_err(|error| {
+        format!(
+            "invalid generated SRCINFO for {}: {error}",
+            work_dir.display()
+        )
+    })?;
 
     let official = resolve(package_name, local_repository)?;
 
@@ -269,7 +299,7 @@ extra nautilus 1:47.1-2
 
         let error = result.unwrap_err();
         assert!(error.contains("cannot read"), "{error}");
-        assert!(error.contains(".SRCINFO"), "{error}");
+        assert!(error.contains("PKGBUILD"), "{error}");
     }
 
     #[test]
