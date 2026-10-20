@@ -133,6 +133,13 @@ pub struct VerifyReq {
 }
 
 #[derive(Debug, Clone)]
+pub struct VerifyBatchReq {
+    pub recipe_index: usize,
+    pub recipe_name: String,
+    pub patches: Vec<VerifyReq>,
+}
+
+#[derive(Debug, Clone)]
 pub struct PrepareReq {
     pub recipe_index: usize,
     pub recipe_name: String,
@@ -166,6 +173,7 @@ pub enum WorkerCommand {
         verify: Vec<VerifyReq>,
     },
     Verify(VerifyReq),
+    VerifyBatch(VerifyBatchReq),
     Cook(CookReq),
     Install(InstallReq),
     CheckUpdate(CheckUpdateReq),
@@ -345,6 +353,7 @@ impl Reporter {
 pub enum Action {
     Prepare(PrepareReq),
     Verify(VerifyReq),
+    VerifyBatch(VerifyBatchReq),
     Cook(CookReq),
     Install(InstallReq),
     CheckUpdate(CheckUpdateReq),
@@ -363,6 +372,7 @@ pub struct Scheduler {
     active_prepare: Option<usize>,
     queue: VecDeque<PrepareReq>,
     waiting_verifies: Vec<VerifyReq>,
+    waiting_verify_batches: Vec<VerifyBatchReq>,
     active_cook: Option<usize>,
     active_update_checks: HashSet<usize>,
 }
@@ -410,6 +420,39 @@ impl Scheduler {
                     };
 
                     self.prepare(prepare, vec![request])
+                }
+            }
+
+            WorkerCommand::VerifyBatch(request) => {
+                let recipe_index = request.recipe_index;
+
+                if prepared(&request.recipe_name) {
+                    vec![Action::VerifyBatch(request)]
+                } else {
+                    let prepare = PrepareReq {
+                        recipe_index,
+                        recipe_name: request.recipe_name.clone(),
+                        reset: false,
+                    };
+                    self.waiting_verify_batches.push(request);
+                    let actions = self.prepare(prepare, Vec::new());
+
+                    if self.waiting_verify_batches.iter().any(|batch| {
+                        batch.recipe_index == recipe_index
+                    }) && !self.preparing(recipe_index)
+                        && !self.queue.iter().any(|queued| {
+                            queued.recipe_index == recipe_index
+                        })
+                    {
+                        let mut actions = actions;
+                        actions.extend(self.release_verify_batches(
+                            recipe_index,
+                            "source preparation could not start",
+                        ));
+                        actions
+                    } else {
+                        actions
+                    }
                 }
             }
 
@@ -519,6 +562,7 @@ impl Scheduler {
                     }));
 
                     actions.extend(self.release_verifies(recipe_index, "cancelled"));
+                    actions.extend(self.release_verify_batches(recipe_index, "cancelled"));
                 }
 
                 actions
@@ -563,6 +607,38 @@ impl Scheduler {
         }
     }
 
+    fn unknown_batch(request: VerifyBatchReq, reason: &str) -> Vec<Action> {
+        request
+            .patches
+            .into_iter()
+            .map(|patch| {
+                Action::Emit(WorkerEvent::Verified {
+                    recipe_index: request.recipe_index,
+                    patch_index: patch.patch_index,
+                    status: PatchStatus::Unknown,
+                    detail: Some(format!("not checked: {reason}")),
+                })
+            })
+            .collect()
+    }
+
+    fn release_verify_batches(
+        &mut self,
+        recipe_index: usize,
+        reason: &str,
+    ) -> Vec<Action> {
+        let (mine, others): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.waiting_verify_batches)
+                .into_iter()
+                .partition(|batch| batch.recipe_index == recipe_index);
+
+        self.waiting_verify_batches = others;
+
+        mine.into_iter()
+            .flat_map(|batch| Self::unknown_batch(batch, reason))
+            .collect()
+    }
+
     /// Verifications that were waiting for `recipe_index` are answered with
     /// "unknown" rather than left spinning.
     fn release_verifies(&mut self, recipe_index: usize, reason: &str) -> Vec<Action> {
@@ -599,6 +675,20 @@ impl Scheduler {
         } else {
             actions
                 .extend(self.release_verifies(recipe_index, "source preparation did not finish"));
+            actions.extend(self.release_verify_batches(
+                recipe_index,
+                "source preparation did not finish",
+            ));
+        }
+
+        if success {
+            let (mine, others): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut self.waiting_verify_batches)
+                    .into_iter()
+                    .partition(|batch| batch.recipe_index == recipe_index);
+
+            self.waiting_verify_batches = others;
+            actions.extend(mine.into_iter().map(Action::VerifyBatch));
         }
 
         // A failure must not stall everything queued behind it.
@@ -774,6 +864,7 @@ pub fn start(env: Env) -> io::Result<Worker> {
                         Action::Verify(request) => {
                             let _ = verify_tx.send(request);
                         }
+                        Action::VerifyBatch(_) => {}
                         Action::Cook(request) => {
                             flags.cook_abort.store(false, Ordering::Relaxed);
                             let _ = cook_tx.send(CookTask::Cook(request));
@@ -1107,6 +1198,13 @@ mod tests {
                 Action::Prepare(request) => format!("prepare {}", request.recipe_index),
                 Action::Verify(request) => {
                     format!("verify {}/{}", request.recipe_index, request.patch_index)
+                }
+                Action::VerifyBatch(request) => {
+                    format!(
+                        "verify-batch {} ({})",
+                        request.recipe_index,
+                        request.patches.len()
+                    )
                 }
                 Action::Cook(request) => format!("cook {}", request.recipe_index),
                 Action::Install(request) => format!("install {}", request.recipe_index),
