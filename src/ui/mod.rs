@@ -457,7 +457,6 @@ pub fn run(
                                             .patches
                                             .iter()
                                             .enumerate()
-                                            .filter(|(_, patch)| patch.selected)
                                             .map(|(patch_index, patch)| VerifyReq {
                                                 recipe_index: recipe_cursor,
                                                 recipe_name: recipe.name.clone(),
@@ -530,7 +529,6 @@ pub fn run(
                                             .patches
                                             .iter()
                                             .enumerate()
-                                            .filter(|(_, patch)| patch.selected)
                                             .map(|(patch_index, patch)| VerifyReq {
                                                 recipe_index: recipe_cursor,
                                                 recipe_name: recipe.name.clone(),
@@ -585,7 +583,6 @@ pub fn run(
                                         .patches
                                         .iter()
                                         .enumerate()
-                                        .filter(|(_, patch)| patch.selected)
                                         .map(|(patch_index, patch)| VerifyReq {
                                             recipe_index: recipe_cursor,
                                             recipe_name: recipe.name.clone(),
@@ -723,7 +720,6 @@ pub fn run(
                                             .patches
                                             .iter()
                                             .enumerate()
-                                            .filter(|(_, patch)| patch.selected)
                                             .map(|(patch_index, patch)| VerifyReq {
                                                 recipe_index: recipe_cursor,
                                                 recipe_name: recipe.name.clone(),
