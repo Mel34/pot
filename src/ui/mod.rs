@@ -21,7 +21,9 @@ use crate::package::VersionStatus;
 use crate::prepare::{self, PrepState};
 use crate::proc::Chunk;
 use crate::term::TerminalGuard;
-use crate::worker::{CookReq, InstallReq, Op, PrepareReq, VerifyReq, WorkerCommand, WorkerEvent};
+use crate::worker::{
+    CheckUpdateReq, CookReq, InstallReq, Op, PrepareReq, VerifyReq, WorkerCommand, WorkerEvent,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStatus {
@@ -497,6 +499,21 @@ pub fn run(
                             }
                             KeyCode::F(5) => {
                                 let _ = crate::helper::sync_packages(&env.repository_name);
+                            }
+                            KeyCode::F(7) => {
+                                if let Some(recipe) = recipes.get(recipe_cursor) {
+                                    if worker_status[recipe_cursor].is_none() {
+                                        cook_status[recipe_cursor] =
+                                            Some("[checking update...]".to_owned());
+
+                                        worker
+                                            .send(WorkerCommand::CheckUpdate(CheckUpdateReq {
+                                                recipe_index: recipe_cursor,
+                                                recipe_name: recipe.name.clone(),
+                                            }))
+                                            .map_err(|_| io::Error::other("worker send failed"))?;
+                                    }
+                                }
                             }
                             KeyCode::F(8) | KeyCode::Char('a') => {
                                 let _ = worker.send(WorkerCommand::Abort {

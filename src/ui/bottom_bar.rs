@@ -35,6 +35,7 @@ pub fn draw_bottom_bar(
             ("F3", "Log"),
             ("F4", "Reset"),
             ("F5", "SyncDB"),
+            ("F7", "ChkUpd"),
             ("F8", "Abort"),
             ("F10", "Quit"),
         ],
