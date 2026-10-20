@@ -285,6 +285,12 @@ pub fn run(
                         UpdateState::Available => "Refresh",
                         UpdateState::Refreshing => "Wait",
                         UpdateState::ReadyToCook | UpdateState::CookFailed => "Cook",
+                        UpdateState::CachedNewer
+                            if prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready =>
+                        {
+                            "Cook"
+                        }
+                        UpdateState::CachedNewer => "Prepare",
                         _ if artifacts
                             .get(recipe_cursor)
                             .and_then(|a| a.as_ref())
@@ -488,14 +494,15 @@ pub fn run(
                                                 patches,
                                             }))
                                             .map_err(|_| io::Error::other("worker send failed"))?;
-                                    } else if artifacts
-                                        .get(recipe_cursor)
-                                        .and_then(|a| a.as_ref())
-                                        .is_some()
-                                        || cook_status[recipe_cursor].as_deref()
-                                            == Some("[cooked successfully]")
-                                        || cook_status[recipe_cursor].as_deref()
-                                            == Some("[installed]")
+                                    } else if update_states[recipe_cursor] != UpdateState::CachedNewer
+                                        && (artifacts
+                                            .get(recipe_cursor)
+                                            .and_then(|a| a.as_ref())
+                                            .is_some()
+                                            || cook_status[recipe_cursor].as_deref()
+                                                == Some("[cooked successfully]")
+                                            || cook_status[recipe_cursor].as_deref()
+                                                == Some("[installed]"))
                                     {
                                         worker
                                             .send(WorkerCommand::Install(InstallReq {
