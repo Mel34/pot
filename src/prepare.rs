@@ -215,7 +215,7 @@ pub fn prepare_sources(
 
     for source in &git_sources {
         check_cancelled(cancel)?;
-        prefetch_git_source(rep, cancel, &work_dir, source)?;
+        prefetch_git_source(rep, cancel, &env.cache_dir, &work_dir, source)?;
     }
 
     check_cancelled(cancel)?;
@@ -254,6 +254,7 @@ fn hint_missing(error: JobError, _program: &str, package: &str) -> JobError {
 fn prefetch_git_source(
     rep: &Reporter,
     cancel: &dyn Fn() -> bool,
+    cache_dir: &Path,
     work_dir: &Path,
     source: &GitSource,
 ) -> Result<(), JobError> {
@@ -273,11 +274,43 @@ fn prefetch_git_source(
         return Ok(());
     }
 
-    let cache_repo = work_dir.join(&source.name);
+    let cache_repo = cache_dir.join("git").join(&source.name);
     let checkout = work_dir.join("src").join(&source.name);
 
     if checkout.exists() {
         return Ok(());
+    }
+
+    // A persistent cache must never be reused for a different repository.
+    // Treat identity problems as fatal instead of silently falling back.
+    if cache_repo.exists() {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&cache_repo)
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .map_err(|error| {
+                JobError::Failed(format!(
+                    "cannot inspect Git cache {}: {error}",
+                    cache_repo.display()
+                ))
+            })?;
+
+        if !output.status.success() {
+            return Err(JobError::Failed(format!(
+                "Git cache {} has no readable origin; inspect or remove it manually",
+                cache_repo.display()
+            )));
+        }
+
+        let actual_url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+
+        if actual_url != source.url {
+            return Err(JobError::Failed(format!(
+                "Git cache identity mismatch for {}: expected {}, found {}; refusing to reuse it",
+                source.name, source.url, actual_url
+            )));
+        }
     }
 
     rep.phase(&format!("fetching {} {revision} (shallow)", source.name));
@@ -295,7 +328,8 @@ fn prefetch_git_source(
                 source.name
             ));
 
-            let _ = fs::remove_dir_all(&cache_repo);
+            // The bare cache is persistent: a failed fetch must not destroy
+            // previously downloaded Git objects. Only discard the checkout.
             let _ = fs::remove_dir_all(&checkout);
 
             Ok(())
@@ -313,6 +347,11 @@ fn shallow_fetch(
     revision: &str,
 ) -> Result<(), JobError> {
     if !cache_repo.exists() {
+        if let Some(parent) = cache_repo.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+
         rep.run(
             "git init",
             Command::new("git").args(["init", "--bare"]).arg(cache_repo),
