@@ -757,6 +757,109 @@ where
     thread::Builder::new().name(name.to_owned()).spawn(body)
 }
 
+fn run_verify_batch(env: &Env, request: &VerifyBatchReq, events: &Sender<WorkerEvent>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let work_dir = env.work_dir(&request.recipe_name);
+        let sources = env.git_sources(&work_dir)?;
+        let paths = request
+            .patches
+            .iter()
+            .map(|patch| patch.patch_path.clone())
+            .collect::<Vec<_>>();
+
+        let verifications = crate::patch::verify_sequence(&work_dir, &sources, &paths);
+
+        Ok::<_, String>(
+            verifications
+                .into_iter()
+                .map(|verification| match verification {
+                    crate::patch::Verification::Applicable(_, _) => {
+                        (PatchStatus::Clean, None)
+                    }
+                    crate::patch::Verification::Applied(_, _) => (
+                        PatchStatus::Clean,
+                        Some("already applied to the sources".to_owned()),
+                    ),
+                    crate::patch::Verification::Conflict(error) => {
+                        (PatchStatus::Failed, Some(error))
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    }));
+
+    let outcomes = match result {
+        Ok(Ok(outcomes)) => outcomes,
+        Ok(Err(error)) => request
+            .patches
+            .iter()
+            .map(|_| (PatchStatus::Failed, Some(error.clone())))
+            .collect(),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    payload
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_owned())
+                })
+                .unwrap_or_else(|| "unknown panic".to_owned());
+            request
+                .patches
+                .iter()
+                .map(|_| {
+                    (
+                        PatchStatus::Failed,
+                        Some(format!("internal error: {message}")),
+                    )
+                })
+                .collect()
+        }
+    };
+
+    for (patch, (status, detail)) in request.patches.iter().zip(outcomes) {
+        let status_text = match status {
+            PatchStatus::Unknown => "UNKNOWN",
+            PatchStatus::Checking => "CHECKING",
+            PatchStatus::Clean => "OK",
+            PatchStatus::Failed => "FAILED",
+        };
+
+        let line = format!(
+            "[pot] verify {}: {}{}\n",
+            patch.patch_path.display(),
+            status_text,
+            detail
+                .as_deref()
+                .map(|message| format!(" — {}", message.replace('\n', " ")))
+                .unwrap_or_default()
+        );
+
+        use std::io::Write as _;
+        if let Err(error) = (|| -> std::io::Result<()> {
+            let path = env.log_path(&request.recipe_name, "verify");
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            file.write_all(line.as_bytes())
+        })() {
+            eprintln!("pot: could not write verification log: {error}");
+        }
+
+        let _ = events.send(WorkerEvent::Verified {
+            recipe_index: patch.recipe_index,
+            patch_index: patch.patch_index,
+            status,
+            detail,
+        });
+    }
+}
+
 pub fn start(env: Env) -> io::Result<Worker> {
     let (msgs_tx, msgs_rx) = mpsc::channel::<Msg>();
     let (events_tx, events_rx) = mpsc::channel::<WorkerEvent>();
@@ -768,7 +871,12 @@ pub fn start(env: Env) -> io::Result<Worker> {
         Install(InstallReq),
     }
 
-    let (verify_tx, verify_rx) = mpsc::channel::<VerifyReq>();
+    enum VerifyTask {
+        Single(VerifyReq),
+        Batch(VerifyBatchReq),
+    }
+
+    let (verify_tx, verify_rx) = mpsc::channel::<VerifyTask>();
     let (cook_tx, cook_rx) = mpsc::channel::<CookTask>();
 
     let flags = Flags::default();
@@ -802,8 +910,13 @@ pub fn start(env: Env) -> io::Result<Worker> {
         let (env, events) = (env.clone(), events_tx.clone());
 
         spawn_named("pot-verify", move || {
-            for request in verify_rx {
-                run_verify(&env, &request, &events);
+            for task in verify_rx {
+                match task {
+                    VerifyTask::Single(request) => run_verify(&env, &request, &events),
+                    VerifyTask::Batch(request) => {
+                        run_verify_batch(&env, &request, &events)
+                    }
+                }
             }
         })?
     };
@@ -862,9 +975,11 @@ pub fn start(env: Env) -> io::Result<Worker> {
                             let _ = prepare_tx.send(request);
                         }
                         Action::Verify(request) => {
-                            let _ = verify_tx.send(request);
+                            let _ = verify_tx.send(VerifyTask::Single(request));
                         }
-                        Action::VerifyBatch(_) => {}
+                        Action::VerifyBatch(request) => {
+                            let _ = verify_tx.send(VerifyTask::Batch(request));
+                        }
                         Action::Cook(request) => {
                             flags.cook_abort.store(false, Ordering::Relaxed);
                             let _ = cook_tx.send(CookTask::Cook(request));
