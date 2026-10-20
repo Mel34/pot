@@ -4,15 +4,15 @@ use std::time::Duration;
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
-    Frame, Terminal,
 };
 
 use crate::theme::*;
@@ -31,9 +31,17 @@ pub fn draw_dialog_box(f: &mut Frame, width: u16, height: u16) -> Rect {
         width: w.min(screen.width.saturating_sub(x + 2)),
         height: h.min(screen.height.saturating_sub(y + 1)),
     };
-    f.render_widget(Block::default().style(Style::default().bg(NC_BLACK)), shadow_rect);
+    f.render_widget(
+        Block::default().style(Style::default().bg(NC_BLACK)),
+        shadow_rect,
+    );
 
-    let dialog_rect = Rect { x, y, width: w, height: h };
+    let dialog_rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
     f.render_widget(Clear, dialog_rect);
     dialog_rect
 }
@@ -52,18 +60,33 @@ pub fn draw_help_dialog(f: &mut Frame) {
         ));
 
     let help_entries = [
-        ("Tab / ← / →", "Switch focus between Left (Recipes) and Right pane"),
+        (
+            "Tab / ← / →",
+            "Switch focus between Left (Recipes) and Right pane",
+        ),
         ("↑ / ↓ / j / k", "Move cursor up / down in active pane"),
-        ("Home / End", "Jump to first / last item (or log top / bottom)"),
+        (
+            "Home / End",
+            "Jump to first / last item (or log top / bottom)",
+        ),
         ("PgUp / PgDn", "Move cursor or scroll log by 10/15 rows"),
-        ("Space", "Toggle patch selection [✓] (or toggle log auto-scroll)"),
-        ("Enter", "Left: Prepare → Cook → Install | Right: Verify patch"),
+        (
+            "Space",
+            "Toggle patch selection [✓] (or toggle log auto-scroll)",
+        ),
+        (
+            "Enter",
+            "Left: Prepare → Cook → Install | Right: Verify patch",
+        ),
         ("F1", "Show / hide this Help table"),
         ("F2", "Cook recipe (Left) / Verify all patches (Right)"),
         ("F3", "Toggle Right pane: Patches ⇄ Live Build Log"),
         ("F4", "Reset prepared sources for selected recipe"),
         ("F5", "Synchronize pacman repository databases"),
-        ("F8 / a", "Abort active preparation, compilation, or install"),
+        (
+            "F8 / a",
+            "Abort active preparation, compilation, or install",
+        ),
         ("F10 / q", "Quit POT"),
     ];
 
@@ -115,7 +138,10 @@ pub fn draw_message_dialog(f: &mut Frame, title: &str, msg: &str) {
         Line::from(""),
         Line::from(Span::styled(
             "[ Press ESC or Enter to close ]",
-            Style::default().bg(NC_CYAN).fg(NC_BLACK).add_modifier(Modifier::BOLD),
+            Style::default()
+                .bg(NC_CYAN)
+                .fg(NC_BLACK)
+                .add_modifier(Modifier::BOLD),
         )),
     ];
 
@@ -188,21 +214,37 @@ pub fn first_start(title: &str, message: &str, hostname: &str) -> io::Result<boo
                 .split(chunks[3]);
 
             let yes_style = if selected {
-                Style::default().bg(NC_CYAN).fg(NC_BLACK).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(NC_CYAN)
+                    .fg(NC_BLACK)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(NC_GRAY).fg(NC_BLACK)
             };
 
             let no_style = if !selected {
-                Style::default().bg(NC_CYAN).fg(NC_BLACK).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(NC_CYAN)
+                    .fg(NC_BLACK)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(NC_GRAY).fg(NC_BLACK)
             };
 
             f.render_widget(msg_p, chunks[1]);
             f.render_widget(host_p, chunks[2]);
-            f.render_widget(Paragraph::new("  YES  ").style(yes_style).alignment(Alignment::Center), btn_chunks[1]);
-            f.render_widget(Paragraph::new("  NO   ").style(no_style).alignment(Alignment::Center), btn_chunks[3]);
+            f.render_widget(
+                Paragraph::new("  YES  ")
+                    .style(yes_style)
+                    .alignment(Alignment::Center),
+                btn_chunks[1],
+            );
+            f.render_widget(
+                Paragraph::new("  NO   ")
+                    .style(no_style)
+                    .alignment(Alignment::Center),
+                btn_chunks[3],
+            );
         })?;
 
         if event::poll(Duration::from_millis(100))? {

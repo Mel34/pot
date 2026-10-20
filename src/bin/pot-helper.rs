@@ -1,5 +1,5 @@
 use std::fs;
-use std::os::unix::fs::{chown, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::thread;
@@ -86,7 +86,10 @@ fn validate_repository_name(name: &str) -> Result<(), String> {
         return Err("repository name cannot be empty".to_owned());
     }
 
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(format!(
             "invalid repository name '{name}': only ASCII alphanumeric, '-', and '_' are allowed"
         ));
@@ -140,8 +143,12 @@ fn run_mount_overlay(lower: &Path, overlay_root: &Path) -> Result<(), String> {
     validate_overlay_chars(lower)?;
     validate_overlay_chars(overlay_root)?;
 
-    let meta = fs::metadata(lower)
-        .map_err(|error| format!("cannot read metadata of lower dir {}: {error}", lower.display()))?;
+    let meta = fs::metadata(lower).map_err(|error| {
+        format!(
+            "cannot read metadata of lower dir {}: {error}",
+            lower.display()
+        )
+    })?;
     let uid = meta.uid();
     let gid = meta.gid();
 
@@ -425,9 +432,10 @@ fn main() -> ExitCode {
     };
 
     let result = match operation {
-        Operation::MountOverlay { lower, overlay_root } => {
-            run_mount_overlay(&lower, &overlay_root)
-        }
+        Operation::MountOverlay {
+            lower,
+            overlay_root,
+        } => run_mount_overlay(&lower, &overlay_root),
         Operation::UnmountOverlay { merged } => run_unmount_overlay(&merged),
         Operation::CleanupOverlay { overlay_root } => run_cleanup_overlay(&overlay_root),
         Operation::SetupRepository { repository, uid } => run_setup_repository(&repository, uid),

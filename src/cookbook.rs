@@ -136,7 +136,8 @@ mod tests {
     use super::*;
 
     fn cookbook(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("pot-cookbook-test-{}-{name}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pot-cookbook-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
 
         fs::create_dir_all(root.join("nautilus")).unwrap();
@@ -156,14 +157,21 @@ mod tests {
         let recipes = discover(&root).unwrap();
 
         assert_eq!(
-            recipes.iter().map(|recipe| recipe.name.as_str()).collect::<Vec<_>>(),
+            recipes
+                .iter()
+                .map(|recipe| recipe.name.as_str())
+                .collect::<Vec<_>>(),
             ["empty", "nautilus"]
         );
 
         assert!(recipes[0].patches.is_empty());
 
         assert_eq!(
-            recipes[1].patches.iter().map(Patch::file_name).collect::<Vec<_>>(),
+            recipes[1]
+                .patches
+                .iter()
+                .map(Patch::file_name)
+                .collect::<Vec<_>>(),
             ["a.patch", "b.patch"]
         );
 

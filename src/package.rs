@@ -55,7 +55,10 @@ fn sync_repositories(local_repository: &str) -> Result<Vec<String>, String> {
         .map_err(|error| error.to_string())?;
 
     if !result.success {
-        return Err(format!("pacman-conf --repo-list failed: {}", result.error_line()));
+        return Err(format!(
+            "pacman-conf --repo-list failed: {}",
+            result.error_line()
+        ));
     }
 
     Ok(result
@@ -133,7 +136,7 @@ fn parse_srcinfo_version(srcinfo: &str) -> Result<String, String> {
 
 /// Classify a cached version against the official repository version.
 #[derive(Debug, PartialEq, Eq)]
-enum VersionStatus {
+pub(crate) enum VersionStatus {
     UpdateAvailable,
     Current,
     CachedNewer,
@@ -145,6 +148,32 @@ fn classify_version_comparison(comparison: i32) -> VersionStatus {
         std::cmp::Ordering::Equal => VersionStatus::Current,
         std::cmp::Ordering::Greater => VersionStatus::CachedNewer,
     }
+}
+
+/// Compare a cached recipe's `.SRCINFO` version with the official repository.
+///
+/// This is read-only: it does not alter the cached recipe or its sources.
+pub(crate) fn check_cached_version(
+    srcinfo_path: &std::path::Path,
+    package_name: &str,
+    local_repository: &str,
+) -> Result<VersionStatus, String> {
+    let srcinfo = std::fs::read_to_string(srcinfo_path)
+        .map_err(|error| format!("cannot read {}: {error}", srcinfo_path.display()))?;
+
+    let cached = parse_srcinfo_version(&srcinfo)
+        .map_err(|error| format!("invalid {}: {error}", srcinfo_path.display()))?;
+
+    let official = resolve(package_name, local_repository)?;
+
+    let comparison = compare_versions(&cached, &official.version).map_err(|error| {
+        format!(
+            "cannot compare cached version {cached} with official version {}: {error}",
+            official.version
+        )
+    })?;
+
+    Ok(classify_version_comparison(comparison))
 }
 
 /// Compare two Arch package versions with `vercmp`.
@@ -203,20 +232,14 @@ extra nautilus 1:47.1-2
     fn parses_srcinfo_version_without_epoch() {
         let srcinfo = "pkgbase = example\npkgver = 2.4.1\npkgrel = 3\n";
 
-        assert_eq!(
-            parse_srcinfo_version(srcinfo),
-            Ok("0:2.4.1-3".to_owned())
-        );
+        assert_eq!(parse_srcinfo_version(srcinfo), Ok("0:2.4.1-3".to_owned()));
     }
 
     #[test]
     fn parses_srcinfo_version_with_epoch_and_ignores_other_fields() {
         let srcinfo = "# generated file\npkgbase = example\nepoch = 2\npkgver = 1.0\npkgrel = 1\narch = any\n";
 
-        assert_eq!(
-            parse_srcinfo_version(srcinfo),
-            Ok("2:1.0-1".to_owned())
-        );
+        assert_eq!(parse_srcinfo_version(srcinfo), Ok("2:1.0-1".to_owned()));
     }
 
     #[test]
@@ -230,27 +253,38 @@ extra nautilus 1:47.1-2
     }
 
     #[test]
+    fn check_cached_version_reports_missing_srcinfo() {
+        let dir = std::env::temp_dir().join(format!(
+            "pot-check-cached-version-missing-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let srcinfo_path = dir.join(".SRCINFO");
+        let _ = std::fs::remove_file(&srcinfo_path);
+
+        let result = check_cached_version(&srcinfo_path, "example", "pot");
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let error = result.unwrap_err();
+        assert!(error.contains("cannot read"), "{error}");
+        assert!(error.contains(".SRCINFO"), "{error}");
+    }
+
+    #[test]
     fn classifies_version_comparison() {
         assert_eq!(
             classify_version_comparison(-1),
             VersionStatus::UpdateAvailable
         );
-        assert_eq!(
-            classify_version_comparison(0),
-            VersionStatus::Current
-        );
-        assert_eq!(
-            classify_version_comparison(1),
-            VersionStatus::CachedNewer
-        );
+        assert_eq!(classify_version_comparison(0), VersionStatus::Current);
+        assert_eq!(classify_version_comparison(1), VersionStatus::CachedNewer);
         assert_eq!(
             classify_version_comparison(-42),
             VersionStatus::UpdateAvailable
         );
-        assert_eq!(
-            classify_version_comparison(42),
-            VersionStatus::CachedNewer
-        );
+        assert_eq!(classify_version_comparison(42), VersionStatus::CachedNewer);
     }
 
     fn captured(success: bool, stdout: &str, stderr: &str) -> proc::Captured {
@@ -278,15 +312,13 @@ extra nautilus 1:47.1-2
             );
         }
 
-        let error = parse_vercmp_result(&captured(true, "not-a-number\n", ""))
-            .unwrap_err();
+        let error = parse_vercmp_result(&captured(true, "not-a-number\n", "")).unwrap_err();
         assert!(error.contains("invalid output"), "{error}");
     }
 
     #[test]
     fn reports_vercmp_command_failure() {
-        let error = parse_vercmp_result(&captured(false, "", "invalid version\n"))
-            .unwrap_err();
+        let error = parse_vercmp_result(&captured(false, "", "invalid version\n")).unwrap_err();
 
         assert!(error.contains("vercmp failed"), "{error}");
         assert!(error.contains("invalid version"), "{error}");

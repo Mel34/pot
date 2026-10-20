@@ -1,18 +1,18 @@
 use std::path::Path;
 
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
 
+use super::WorkerStatus as UiWorkerStatus;
+use super::bottom_bar::{ActivePane, RightPaneMode};
 use crate::cookbook::{PatchStatus, Recipe};
 use crate::prepare::{self, PrepState};
 use crate::theme::*;
-use super::WorkerStatus as UiWorkerStatus;
-use super::bottom_bar::{ActivePane, RightPaneMode};
 
 pub fn truncate_end(s: &str, max_len: usize) -> String {
     let count = s.chars().count();
@@ -93,12 +93,10 @@ fn draw_left_pane(
         Style::default().fg(NC_CYAN)
     };
 
-    let title_line = Line::from(vec![
-        Span::styled(
-            " [ Recipes & Artifacts ] ",
-            Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    let title_line = Line::from(vec![Span::styled(
+        " [ Recipes & Artifacts ] ",
+        Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD),
+    )]);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -118,7 +116,10 @@ fn draw_left_pane(
 
     let status_w = 11;
     let artifact_w = 26.min(area.width.saturating_sub(28) as usize);
-    let name_w = (area.width.saturating_sub(status_w as u16 + artifact_w as u16 + 8) as usize).max(8);
+    let name_w = (area
+        .width
+        .saturating_sub(status_w as u16 + artifact_w as u16 + 8) as usize)
+        .max(8);
 
     let header = format!(
         "   {:<name_w$} {:<status_w$} {:<artifact_w$}",
@@ -143,11 +144,25 @@ fn draw_left_pane(
                 Some(UiWorkerStatus::Resetting) => "[reset]".to_owned(),
                 Some(UiWorkerStatus::Cooking) => "[cooking]".to_owned(),
                 Some(UiWorkerStatus::Installing) => "[install]".to_owned(),
-                None if cook_status[idx].as_deref() == Some("[installed]") => "[installed]".to_owned(),
-                None if cook_status[idx].as_deref().is_some_and(|s| s.contains("install failed")) => "[failed]".to_owned(),
-                None if cook_status[idx].as_deref() == Some("[cooked successfully]") => "[cooked]".to_owned(),
+                None if cook_status[idx].as_deref() == Some("[installed]") => {
+                    "[installed]".to_owned()
+                }
+                None if cook_status[idx]
+                    .as_deref()
+                    .is_some_and(|s| s.contains("install failed")) =>
+                {
+                    "[failed]".to_owned()
+                }
+                None if cook_status[idx].as_deref() == Some("[cooked successfully]") => {
+                    "[cooked]".to_owned()
+                }
                 None if artifacts[idx].is_some() => "[cooked]".to_owned(),
-                None if cook_status[idx].as_deref().is_some_and(|s| s.contains("failed")) => "[failed]".to_owned(),
+                None if cook_status[idx]
+                    .as_deref()
+                    .is_some_and(|s| s.contains("failed")) =>
+                {
+                    "[failed]".to_owned()
+                }
                 None if is_prepared => "[ready]".to_owned(),
                 None => "[unprep]".to_owned(),
             };
@@ -180,11 +195,8 @@ fn draw_left_pane(
                         .add_modifier(Modifier::BOLD),
                 )
             } else if idx == recipe_cursor && !is_active {
-                ListItem::new(row_text).style(
-                    Style::default()
-                        .fg(NC_YELLOW)
-                        .add_modifier(Modifier::BOLD),
-                )
+                ListItem::new(row_text)
+                    .style(Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD))
             } else if artifacts[idx].is_some() {
                 ListItem::new(row_text).style(Style::default().fg(NC_WHITE))
             } else {
@@ -223,7 +235,11 @@ fn draw_left_pane(
 
     let status_str = format!(
         " {}/{} recipes ",
-        if total_count == 0 { 0 } else { recipe_cursor + 1 },
+        if total_count == 0 {
+            0
+        } else {
+            recipe_cursor + 1
+        },
         total_count
     );
     let status_rect = Rect {
@@ -261,12 +277,10 @@ fn draw_right_pane(
 
     match right_mode {
         RightPaneMode::Patches => {
-            let title_line = Line::from(vec![
-                Span::styled(
-                    format!(" [ Patches: {} ] ", recipe_name),
-                    Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD),
-                ),
-            ]);
+            let title_line = Line::from(vec![Span::styled(
+                format!(" [ Patches: {} ] ", recipe_name),
+                Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD),
+            )]);
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -289,7 +303,11 @@ fn draw_right_pane(
 
             let status_w = 8;
             let use_w = 5;
-            let file_w = (area.width.saturating_sub(status_w as u16 + use_w as u16 + 8) as usize).max(10);
+            let file_w = (area
+                .width
+                .saturating_sub(status_w as u16 + use_w as u16 + 8)
+                as usize)
+                .max(10);
 
             let header = format!(
                 "   {:<file_w$} {:<status_w$} {:>use_w$}",
@@ -336,17 +354,11 @@ fn draw_right_pane(
                                 .add_modifier(Modifier::BOLD),
                         )
                     } else if idx == patch_cursor && !is_active {
-                        ListItem::new(row_text).style(
-                            Style::default()
-                                .fg(NC_YELLOW)
-                                .add_modifier(Modifier::BOLD),
-                        )
+                        ListItem::new(row_text)
+                            .style(Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD))
                     } else if patch.selected {
-                        ListItem::new(row_text).style(
-                            Style::default()
-                                .fg(NC_YELLOW)
-                                .add_modifier(Modifier::BOLD),
-                        )
+                        ListItem::new(row_text)
+                            .style(Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD))
                     } else {
                         ListItem::new(row_text).style(Style::default().fg(NC_WHITE))
                     }
@@ -383,7 +395,11 @@ fn draw_right_pane(
 
             let status_str = format!(
                 " {}/{} patches ({} sel) ",
-                if total_count == 0 { 0 } else { patch_cursor + 1 },
+                if total_count == 0 {
+                    0
+                } else {
+                    patch_cursor + 1
+                },
                 total_count,
                 selected_count
             );
@@ -400,12 +416,10 @@ fn draw_right_pane(
         }
 
         RightPaneMode::BuildLog => {
-            let title_line = Line::from(vec![
-                Span::styled(
-                    format!(" [ Build Log: {} (F3/Esc: Patches) ] ", recipe_name),
-                    Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD),
-                ),
-            ]);
+            let title_line = Line::from(vec![Span::styled(
+                format!(" [ Build Log: {} (F3/Esc: Patches) ] ", recipe_name),
+                Style::default().fg(NC_YELLOW).add_modifier(Modifier::BOLD),
+            )]);
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -414,7 +428,10 @@ fn draw_right_pane(
                 .style(Style::default().bg(NC_BLUE).fg(NC_WHITE))
                 .title(title_line);
 
-            let lines = log_buffers.get(recipe_cursor).map(|b| b.as_slice()).unwrap_or(&[]);
+            let lines = log_buffers
+                .get(recipe_cursor)
+                .map(|b| b.as_slice())
+                .unwrap_or(&[]);
             let total_lines = lines.len();
             let visible_rows = area.height.saturating_sub(2) as usize;
 
@@ -440,7 +457,11 @@ fn draw_right_pane(
             let auto_str = if auto_scroll { "[AUTO]" } else { "" };
             let status_str = format!(
                 " {}/{} lines {} ",
-                if total_lines == 0 { 0 } else { (offset + visible_rows).min(total_lines) },
+                if total_lines == 0 {
+                    0
+                } else {
+                    (offset + visible_rows).min(total_lines)
+                },
                 total_lines,
                 auto_str
             );

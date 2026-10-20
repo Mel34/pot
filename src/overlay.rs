@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-
 pub struct Overlay {
     pub merged: PathBuf,
     mounted: bool,
@@ -71,7 +70,9 @@ fn unescape_octal(field: &str) -> String {
     while index < bytes.len() {
         if bytes[index] == b'\\'
             && index + 3 < bytes.len()
-            && bytes[index + 1..index + 4].iter().all(|b| (b'0'..=b'7').contains(b))
+            && bytes[index + 1..index + 4]
+                .iter()
+                .all(|b| (b'0'..=b'7').contains(b))
         {
             let value = (bytes[index + 1] - b'0') * 64
                 + (bytes[index + 2] - b'0') * 8

@@ -17,7 +17,10 @@ pub fn name() -> Result<String, String> {
         .map_err(|error| format!("cannot determine the host name: {error}"))?;
 
     if !result.success {
-        return Err(format!("hostnamectl --static failed: {}", result.error_line()));
+        return Err(format!(
+            "hostnamectl --static failed: {}",
+            result.error_line()
+        ));
     }
 
     let name = result.stdout.trim().to_owned();
@@ -34,7 +37,8 @@ pub fn config_path(repository: &str) -> PathBuf {
 }
 
 pub fn repository_dir(repository: &str) -> Result<PathBuf, String> {
-    let result = proc::capture(&mut Command::new("pacman-conf")).map_err(|error| error.to_string())?;
+    let result =
+        proc::capture(&mut Command::new("pacman-conf")).map_err(|error| error.to_string())?;
 
     if !result.success {
         return Err(format!("pacman-conf failed: {}", result.error_line()));
@@ -184,7 +188,10 @@ fn ensure_pacman_conf(repository: &str) -> Result<(), String> {
         .map_err(|error| format!("failed to create temporary pacman.conf: {error}"))?;
 
     let result = interactive(
-        Command::new("sudo").args(["install", "-m", "644"]).arg(&temp_path).arg(&path),
+        Command::new("sudo")
+            .args(["install", "-m", "644"])
+            .arg(&temp_path)
+            .arg(&path),
         "sudo install (pacman.conf)",
     );
 

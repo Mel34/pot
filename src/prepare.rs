@@ -113,18 +113,29 @@ pub fn parse_git_sources(srcinfo: &str) -> Vec<GitSource> {
 }
 
 pub fn load_git_sources(work_dir: &Path) -> Result<Vec<GitSource>, String> {
-    let result = proc::capture(Command::new("makepkg").arg("--printsrcinfo").current_dir(work_dir))
-        .map_err(|error| error.to_string())?;
+    let result = proc::capture(
+        Command::new("makepkg")
+            .arg("--printsrcinfo")
+            .current_dir(work_dir),
+    )
+    .map_err(|error| error.to_string())?;
 
     if !result.success {
-        return Err(format!("makepkg --printsrcinfo failed: {}", result.error_line()));
+        return Err(format!(
+            "makepkg --printsrcinfo failed: {}",
+            result.error_line()
+        ));
     }
 
     Ok(parse_git_sources(&result.stdout))
 }
 
 fn check_cancelled(cancel: &dyn Fn() -> bool) -> Result<(), JobError> {
-    if cancel() { Err(JobError::Cancelled) } else { Ok(()) }
+    if cancel() {
+        Err(JobError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn prepare_sources(
@@ -219,7 +230,8 @@ pub fn prepare_sources(
         cancel,
     )?;
 
-    fs::remove_file(&marker).map_err(|error| format!("cannot remove {}: {error}", marker.display()))?;
+    fs::remove_file(&marker)
+        .map_err(|error| format!("cannot remove {}: {error}", marker.display()))?;
 
     Ok(())
 }
@@ -246,12 +258,18 @@ fn prefetch_git_source(
     source: &GitSource,
 ) -> Result<(), JobError> {
     let Some((kind, revision)) = &source.reference else {
-        rep.note(&format!("{}: no tag or commit given; makepkg will fetch it", source.name));
+        rep.note(&format!(
+            "{}: no tag or commit given; makepkg will fetch it",
+            source.name
+        ));
         return Ok(());
     };
 
     if kind != "tag" && kind != "commit" {
-        rep.note(&format!("{}: {kind} sources are fetched by makepkg", source.name));
+        rep.note(&format!(
+            "{}: {kind} sources are fetched by makepkg",
+            source.name
+        ));
         return Ok(());
     }
 
@@ -303,10 +321,12 @@ fn shallow_fetch(
 
         rep.run(
             "git remote add",
-            Command::new("git")
-                .arg("-C")
-                .arg(cache_repo)
-                .args(["remote", "add", "origin", &source.url]),
+            Command::new("git").arg("-C").arg(cache_repo).args([
+                "remote",
+                "add",
+                "origin",
+                &source.url,
+            ]),
             cancel,
         )?;
     }
@@ -320,10 +340,12 @@ fn shallow_fetch(
 
     rep.run(
         "git fetch",
-        Command::new("git")
-            .arg("-C")
-            .arg(cache_repo)
-            .args(["fetch", "--depth=1", "origin", &refspec]),
+        Command::new("git").arg("-C").arg(cache_repo).args([
+            "fetch",
+            "--depth=1",
+            "origin",
+            &refspec,
+        ]),
         cancel,
     )?;
 

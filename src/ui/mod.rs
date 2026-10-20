@@ -11,12 +11,13 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
     Frame,
+    layout::{Constraint, Direction, Layout},
 };
 
-use crate::cookbook::Recipe;
 use crate::cookbook::PatchStatus;
+use crate::cookbook::Recipe;
+use crate::package::VersionStatus;
 use crate::prepare::{self, PrepState};
 use crate::proc::Chunk;
 use crate::term::TerminalGuard;
@@ -75,7 +76,11 @@ pub fn run(
     let repository_dir = crate::repository::repository_dir(&env.repository_name).ok();
     let mut artifacts: Vec<Option<String>> = recipes
         .iter()
-        .map(|r| repository_dir.as_ref().and_then(|d| scan_artifact(d, &r.name)))
+        .map(|r| {
+            repository_dir
+                .as_ref()
+                .and_then(|d| scan_artifact(d, &r.name))
+        })
         .collect();
 
     for (i, art) in artifacts.iter().enumerate() {
@@ -106,7 +111,10 @@ pub fn run(
                     cook_status[recipe_index] = Some(text);
                 }
 
-                WorkerEvent::Output { recipe_index, chunk } => {
+                WorkerEvent::Output {
+                    recipe_index,
+                    chunk,
+                } => {
                     if let Some(buf) = log_buffers.get_mut(recipe_index) {
                         match chunk {
                             Chunk::Line(line) => buf.push(line),
@@ -120,7 +128,10 @@ pub fn run(
                         }
                     }
 
-                    if auto_scroll && right_mode == RightPaneMode::BuildLog && recipe_cursor == recipe_index {
+                    if auto_scroll
+                        && right_mode == RightPaneMode::BuildLog
+                        && recipe_cursor == recipe_index
+                    {
                         if let Some(buf) = log_buffers.get(recipe_index) {
                             let total = buf.len();
                             log_scroll = total;
@@ -128,7 +139,10 @@ pub fn run(
                     }
                 }
 
-                WorkerEvent::Prepared { recipe_index, result } => {
+                WorkerEvent::Prepared {
+                    recipe_index,
+                    result,
+                } => {
                     worker_status[recipe_index] = None;
                     match result {
                         Ok(()) => {
@@ -153,7 +167,11 @@ pub fn run(
                     }
                 }
 
-                WorkerEvent::Cooked { recipe_index, result, .. } => {
+                WorkerEvent::Cooked {
+                    recipe_index,
+                    result,
+                    ..
+                } => {
                     worker_status[recipe_index] = None;
                     match result {
                         Ok(()) => {
@@ -164,14 +182,18 @@ pub fn run(
                                 }
                             }
                         }
-                        Err(crate::worker::JobError::Failed(ref message)) if message.contains("already being cooked") => {}
+                        Err(crate::worker::JobError::Failed(ref message))
+                            if message.contains("already being cooked") => {}
                         Err(error) => {
                             cook_status[recipe_index] = Some(format!("[cook failed: {error}]"));
                         }
                     }
                 }
 
-                WorkerEvent::Installed { recipe_index, result } => {
+                WorkerEvent::Installed {
+                    recipe_index,
+                    result,
+                } => {
                     worker_status[recipe_index] = None;
                     match result {
                         Ok(()) => {
@@ -181,6 +203,18 @@ pub fn run(
                             cook_status[recipe_index] = Some(format!("[install failed: {error}]"));
                         }
                     }
+                }
+
+                WorkerEvent::UpdateChecked {
+                    recipe_index,
+                    result,
+                } => {
+                    cook_status[recipe_index] = Some(match result {
+                        Ok(VersionStatus::UpdateAvailable) => "[update]".to_owned(),
+                        Ok(VersionStatus::Current) => "[up to date]".to_owned(),
+                        Ok(VersionStatus::CachedNewer) => "[cached newer]".to_owned(),
+                        Err(error) => format!("[update check failed: {error}]"),
+                    });
                 }
 
                 WorkerEvent::Notice(msg) => {
@@ -194,7 +228,10 @@ pub fn run(
         let enter_label = match active_pane {
             ActivePane::Left => {
                 if let Some(recipe) = recipes.get(recipe_cursor) {
-                    if artifacts.get(recipe_cursor).and_then(|a| a.as_ref()).is_some()
+                    if artifacts
+                        .get(recipe_cursor)
+                        .and_then(|a| a.as_ref())
+                        .is_some()
                         || cook_status[recipe_cursor].as_deref() == Some("[cooked successfully]")
                         || cook_status[recipe_cursor].as_deref() == Some("[installed]")
                     {
@@ -244,13 +281,7 @@ pub fn run(
                 auto_scroll,
             );
 
-            bottom_bar::draw_bottom_bar(
-                f,
-                chunks[1],
-                active_pane,
-                right_mode,
-                enter_label,
-            );
+            bottom_bar::draw_bottom_bar(f, chunks[1], active_pane, right_mode, enter_label);
 
             if let Some(ref m) = modal {
                 match m {
@@ -350,11 +381,17 @@ pub fn run(
                                         continue;
                                     }
 
-                                    let is_prepared = prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready;
+                                    let is_prepared = prepare::state(&env.cache_dir, &recipe.name)
+                                        == PrepState::Ready;
 
-                                    if artifacts.get(recipe_cursor).and_then(|a| a.as_ref()).is_some()
-                                        || cook_status[recipe_cursor].as_deref() == Some("[cooked successfully]")
-                                        || cook_status[recipe_cursor].as_deref() == Some("[installed]")
+                                    if artifacts
+                                        .get(recipe_cursor)
+                                        .and_then(|a| a.as_ref())
+                                        .is_some()
+                                        || cook_status[recipe_cursor].as_deref()
+                                            == Some("[cooked successfully]")
+                                        || cook_status[recipe_cursor].as_deref()
+                                            == Some("[installed]")
                                     {
                                         worker
                                             .send(WorkerCommand::Install(InstallReq {
@@ -407,7 +444,9 @@ pub fn run(
                             KeyCode::F(2) | KeyCode::Char('c') => {
                                 if let Some(recipe) = recipes.get(recipe_cursor) {
                                     if worker_status[recipe_cursor].is_none() {
-                                        let is_prepared = prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready;
+                                        let is_prepared =
+                                            prepare::state(&env.cache_dir, &recipe.name)
+                                                == PrepState::Ready;
                                         if is_prepared {
                                             let patches = recipe
                                                 .patches
@@ -422,7 +461,9 @@ pub fn run(
                                                     recipe_name: recipe.name.clone(),
                                                     patches,
                                                 }))
-                                                .map_err(|_| io::Error::other("worker send failed"))?;
+                                                .map_err(|_| {
+                                                    io::Error::other("worker send failed")
+                                                })?;
                                         }
                                     }
                                 }
@@ -458,7 +499,9 @@ pub fn run(
                                 let _ = crate::helper::sync_packages(&env.repository_name);
                             }
                             KeyCode::F(8) | KeyCode::Char('a') => {
-                                let _ = worker.send(WorkerCommand::Abort { recipe_index: recipe_cursor });
+                                let _ = worker.send(WorkerCommand::Abort {
+                                    recipe_index: recipe_cursor,
+                                });
                             }
                             _ => {}
                         },
@@ -491,7 +534,8 @@ pub fn run(
                                 KeyCode::PageDown => {
                                     if let Some(recipe) = recipes.get(recipe_cursor) {
                                         if !recipe.patches.is_empty() {
-                                            patch_cursor = (patch_cursor + 10).min(recipe.patches.len() - 1);
+                                            patch_cursor =
+                                                (patch_cursor + 10).min(recipe.patches.len() - 1);
                                         }
                                     }
                                 }
@@ -519,7 +563,8 @@ pub fn run(
                                 }
                                 KeyCode::F(2) => {
                                     if let Some(recipe) = recipes.get_mut(recipe_cursor) {
-                                        for (p_idx, patch) in recipe.patches.iter_mut().enumerate() {
+                                        for (p_idx, patch) in recipe.patches.iter_mut().enumerate()
+                                        {
                                             if patch.selected {
                                                 patch.status = PatchStatus::Checking;
                                                 let req = VerifyReq {
@@ -561,7 +606,9 @@ pub fn run(
                                     }
                                 }
                                 KeyCode::F(8) | KeyCode::Char('a') => {
-                                    let _ = worker.send(WorkerCommand::Abort { recipe_index: recipe_cursor });
+                                    let _ = worker.send(WorkerCommand::Abort {
+                                        recipe_index: recipe_cursor,
+                                    });
                                 }
                                 _ => {}
                             },
@@ -572,7 +619,10 @@ pub fn run(
                                     log_scroll = log_scroll.saturating_sub(1);
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
-                                    let total = log_buffers.get(recipe_cursor).map(|b| b.len()).unwrap_or(0);
+                                    let total = log_buffers
+                                        .get(recipe_cursor)
+                                        .map(|b| b.len())
+                                        .unwrap_or(0);
                                     log_scroll = (log_scroll + 1).min(total.saturating_sub(1));
                                     if log_scroll >= total.saturating_sub(1) {
                                         auto_scroll = true;
@@ -583,7 +633,10 @@ pub fn run(
                                     log_scroll = 0;
                                 }
                                 KeyCode::End => {
-                                    let total = log_buffers.get(recipe_cursor).map(|b| b.len()).unwrap_or(0);
+                                    let total = log_buffers
+                                        .get(recipe_cursor)
+                                        .map(|b| b.len())
+                                        .unwrap_or(0);
                                     log_scroll = total.saturating_sub(1);
                                     auto_scroll = true;
                                 }
@@ -592,7 +645,10 @@ pub fn run(
                                     log_scroll = log_scroll.saturating_sub(15);
                                 }
                                 KeyCode::PageDown => {
-                                    let total = log_buffers.get(recipe_cursor).map(|b| b.len()).unwrap_or(0);
+                                    let total = log_buffers
+                                        .get(recipe_cursor)
+                                        .map(|b| b.len())
+                                        .unwrap_or(0);
                                     log_scroll = (log_scroll + 15).min(total.saturating_sub(1));
                                     if log_scroll >= total.saturating_sub(1) {
                                         auto_scroll = true;
@@ -602,7 +658,9 @@ pub fn run(
                                     auto_scroll = !auto_scroll;
                                 }
                                 KeyCode::F(8) | KeyCode::Char('a') => {
-                                    let _ = worker.send(WorkerCommand::Abort { recipe_index: recipe_cursor });
+                                    let _ = worker.send(WorkerCommand::Abort {
+                                        recipe_index: recipe_cursor,
+                                    });
                                 }
                                 _ => {}
                             },

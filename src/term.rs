@@ -41,10 +41,6 @@ impl TerminalGuard {
     pub fn terminal(&mut self) -> &mut Tui {
         &mut self.terminal
     }
-
-
-
-
 }
 
 impl Drop for TerminalGuard {

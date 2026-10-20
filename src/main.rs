@@ -1,6 +1,7 @@
 mod config;
 mod cookbook;
 mod diag;
+mod helper;
 mod kitchen;
 mod overlay;
 mod package;
@@ -10,7 +11,6 @@ mod prepare;
 mod proc;
 mod repository;
 mod startup;
-mod helper;
 mod term;
 mod theme;
 mod ui;
@@ -111,8 +111,12 @@ fn run() -> Result<(), String> {
 
     let cookbook_dir = paths::cookbook_dir(config.cookbook.as_deref());
 
-    let recipes = cookbook::discover(&cookbook_dir)
-        .map_err(|error| format!("failed to read the cookbook {}: {error}", cookbook_dir.display()))?;
+    let recipes = cookbook::discover(&cookbook_dir).map_err(|error| {
+        format!(
+            "failed to read the cookbook {}: {error}",
+            cookbook_dir.display()
+        )
+    })?;
 
     let env = worker::Env::new(cache_dir, repository_name);
 

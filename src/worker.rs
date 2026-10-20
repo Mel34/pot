@@ -8,7 +8,7 @@
 //! stuck on "preparing" forever.
 
 use std::any::Any;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -21,6 +21,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::cookbook::PatchStatus;
 use crate::overlay::Overlay;
+use crate::package::VersionStatus;
 use crate::prepare::{self, GitSource, PrepState};
 use crate::proc::{self, Chunk, RunError};
 
@@ -93,7 +94,9 @@ impl Env {
     }
 
     pub fn log_path(&self, recipe: &str, kind: &str) -> PathBuf {
-        self.cache_dir.join("logs").join(format!("{recipe}.{kind}.log"))
+        self.cache_dir
+            .join("logs")
+            .join(format!("{recipe}.{kind}.log"))
     }
 
     /// The `git+` sources of a prepared tree (cached: `makepkg --printsrcinfo`
@@ -115,7 +118,9 @@ impl Env {
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Vec<GitSource>>> {
-        self.sources.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.sources
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -147,6 +152,12 @@ pub struct InstallReq {
     pub recipe_name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CheckUpdateReq {
+    pub recipe_index: usize,
+    pub recipe_name: String,
+}
+
 pub enum WorkerCommand {
     /// Prepare (or, with `reset`, re-prepare) a recipe and then verify the
     /// given patches against the result.
@@ -157,6 +168,7 @@ pub enum WorkerCommand {
     Verify(VerifyReq),
     Cook(CookReq),
     Install(InstallReq),
+    CheckUpdate(CheckUpdateReq),
     /// Cancel whatever is running or queued for this recipe.
     Abort {
         recipe_index: usize,
@@ -166,10 +178,19 @@ pub enum WorkerCommand {
 
 pub enum WorkerEvent {
     /// Work on a recipe has actually begun (as opposed to merely queued).
-    Started { recipe_index: usize, op: Op },
+    Started {
+        recipe_index: usize,
+        op: Op,
+    },
     /// A new high-level step ("cloning PKGBUILD", ...).
-    Phase { recipe_index: usize, text: String },
-    Output { recipe_index: usize, chunk: Chunk },
+    Phase {
+        recipe_index: usize,
+        text: String,
+    },
+    Output {
+        recipe_index: usize,
+        chunk: Chunk,
+    },
     Prepared {
         recipe_index: usize,
         result: Result<(), JobError>,
@@ -191,6 +212,10 @@ pub enum WorkerEvent {
         recipe_index: usize,
         result: Result<(), JobError>,
     },
+    UpdateChecked {
+        recipe_index: usize,
+        result: Result<VersionStatus, String>,
+    },
     /// Something the user should know that is not tied to a recipe.
     #[allow(dead_code)]
     Notice(String),
@@ -208,7 +233,12 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    pub fn new(events: Sender<WorkerEvent>, recipe_index: usize, log_path: &Path, title: &str) -> Self {
+    pub fn new(
+        events: Sender<WorkerEvent>,
+        recipe_index: usize,
+        log_path: &Path,
+        title: &str,
+    ) -> Self {
         let file = log_path
             .parent()
             .and_then(|parent| fs::create_dir_all(parent).ok())
@@ -317,6 +347,7 @@ pub enum Action {
     Verify(VerifyReq),
     Cook(CookReq),
     Install(InstallReq),
+    CheckUpdate(CheckUpdateReq),
     AbortCook,
     AbortPrepare,
     Emit(WorkerEvent),
@@ -333,17 +364,22 @@ pub struct Scheduler {
     queue: VecDeque<PrepareReq>,
     waiting_verifies: Vec<VerifyReq>,
     active_cook: Option<usize>,
+    active_update_checks: HashSet<usize>,
 }
 
 impl Scheduler {
     fn preparing(&self, recipe_index: usize) -> bool {
         self.active_prepare == Some(recipe_index)
-            || self.queue.iter().any(|queued| queued.recipe_index == recipe_index)
+            || self
+                .queue
+                .iter()
+                .any(|queued| queued.recipe_index == recipe_index)
     }
 
     fn wait_for_prepare(&mut self, request: VerifyReq) {
         let duplicate = self.waiting_verifies.iter().any(|waiting| {
-            waiting.recipe_index == request.recipe_index && waiting.patch_index == request.patch_index
+            waiting.recipe_index == request.recipe_index
+                && waiting.patch_index == request.patch_index
         });
 
         if !duplicate {
@@ -378,7 +414,13 @@ impl Scheduler {
             }
 
             WorkerCommand::Cook(request) => {
-                if let Some(running) = self.active_cook {
+                if self.active_update_checks.contains(&request.recipe_index) {
+                    vec![Action::Emit(WorkerEvent::Cooked {
+                        recipe_index: request.recipe_index,
+                        result: Err("an update check is in progress".into()),
+                        overlay: None,
+                    })]
+                } else if let Some(running) = self.active_cook {
                     let message = if running == request.recipe_index {
                         "this recipe is already being cooked"
                     } else {
@@ -403,7 +445,12 @@ impl Scheduler {
             }
 
             WorkerCommand::Install(request) => {
-                if let Some(running) = self.active_cook {
+                if self.active_update_checks.contains(&request.recipe_index) {
+                    vec![Action::Emit(WorkerEvent::Installed {
+                        recipe_index: request.recipe_index,
+                        result: Err("an update check is in progress".into()),
+                    })]
+                } else if let Some(running) = self.active_cook {
                     let message = if running == request.recipe_index {
                         "this recipe is already being processed"
                     } else {
@@ -422,6 +469,29 @@ impl Scheduler {
                 } else {
                     self.active_cook = Some(request.recipe_index);
                     vec![Action::Install(request)]
+                }
+            }
+
+            WorkerCommand::CheckUpdate(request) => {
+                let index = request.recipe_index;
+
+                if self.preparing(index) {
+                    vec![Action::Emit(WorkerEvent::UpdateChecked {
+                        recipe_index: index,
+                        result: Err("sources are being prepared".to_owned()),
+                    })]
+                } else if self.active_cook == Some(index) {
+                    vec![Action::Emit(WorkerEvent::UpdateChecked {
+                        recipe_index: index,
+                        result: Err("recipe is being cooked".to_owned()),
+                    })]
+                } else if !self.active_update_checks.insert(index) {
+                    vec![Action::Emit(WorkerEvent::UpdateChecked {
+                        recipe_index: index,
+                        result: Err("an update check is already running".to_owned()),
+                    })]
+                } else {
+                    vec![Action::CheckUpdate(request)]
                 }
             }
 
@@ -461,6 +531,13 @@ impl Scheduler {
 
     fn prepare(&mut self, request: PrepareReq, verify: Vec<VerifyReq>) -> Vec<Action> {
         let recipe_index = request.recipe_index;
+
+        if self.active_update_checks.contains(&recipe_index) {
+            return vec![Action::Emit(WorkerEvent::Prepared {
+                recipe_index,
+                result: Err("an update check is in progress".into()),
+            })];
+        }
 
         if self.active_cook == Some(recipe_index) {
             return vec![Action::Emit(WorkerEvent::Prepared {
@@ -520,7 +597,8 @@ impl Scheduler {
             self.waiting_verifies = others;
             actions.extend(mine.into_iter().map(Action::Verify));
         } else {
-            actions.extend(self.release_verifies(recipe_index, "source preparation did not finish"));
+            actions
+                .extend(self.release_verifies(recipe_index, "source preparation did not finish"));
         }
 
         // A failure must not stall everything queued behind it.
@@ -535,6 +613,10 @@ impl Scheduler {
     pub fn cook_finished(&mut self) {
         self.active_cook = None;
     }
+
+    fn update_check_finished(&mut self, recipe_index: usize) {
+        self.active_update_checks.remove(&recipe_index);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +627,7 @@ enum Msg {
     Command(WorkerCommand),
     PrepareDone { recipe_index: usize, success: bool },
     CookDone,
+    UpdateCheckDone { recipe_index: usize },
 }
 
 #[derive(Clone, Default)]
@@ -567,8 +650,6 @@ impl Worker {
             .send(Msg::Command(command))
             .map_err(|_| io::Error::other("the background worker has stopped"))
     }
-
-
 }
 
 fn panic_message(payload: &Box<dyn Any + Send>) -> String {
@@ -591,6 +672,7 @@ pub fn start(env: Env) -> io::Result<Worker> {
     let (events_tx, events_rx) = mpsc::channel::<WorkerEvent>();
 
     let (prepare_tx, prepare_rx) = mpsc::channel::<PrepareReq>();
+    let (update_check_tx, update_check_rx) = mpsc::channel::<CheckUpdateReq>();
     enum CookTask {
         Cook(CookReq),
         Install(InstallReq),
@@ -602,11 +684,26 @@ pub fn start(env: Env) -> io::Result<Worker> {
     let flags = Flags::default();
 
     let prepare_lane = {
-        let (env, events, msgs, flags) = (env.clone(), events_tx.clone(), msgs_tx.clone(), flags.clone());
+        let (env, events, msgs, flags) = (
+            env.clone(),
+            events_tx.clone(),
+            msgs_tx.clone(),
+            flags.clone(),
+        );
 
         spawn_named("pot-prepare", move || {
             for request in prepare_rx {
                 run_prepare(&env, &request, &events, &msgs, &flags);
+            }
+        })?
+    };
+
+    let update_check_lane = {
+        let (env, events, msgs) = (env.clone(), events_tx.clone(), msgs_tx.clone());
+
+        spawn_named("pot-update-check", move || {
+            for request in update_check_rx {
+                run_update_check(&env, &request, &events, &msgs);
             }
         })?
     };
@@ -622,13 +719,20 @@ pub fn start(env: Env) -> io::Result<Worker> {
     };
 
     let cook_lane = {
-        let (env, events, msgs, flags) = (env.clone(), events_tx.clone(), msgs_tx.clone(), flags.clone());
+        let (env, events, msgs, flags) = (
+            env.clone(),
+            events_tx.clone(),
+            msgs_tx.clone(),
+            flags.clone(),
+        );
 
         spawn_named("pot-cook", move || {
             for task in cook_rx {
                 match task {
                     CookTask::Cook(request) => run_cook(&env, &request, &events, &msgs, &flags),
-                    CookTask::Install(request) => run_install(&env, &request, &events, &msgs, &flags),
+                    CookTask::Install(request) => {
+                        run_install(&env, &request, &events, &msgs, &flags)
+                    }
                 }
             }
         })?
@@ -647,11 +751,16 @@ pub fn start(env: Env) -> io::Result<Worker> {
                 let actions = match msg {
                     Msg::Command(WorkerCommand::Shutdown) => break,
                     Msg::Command(command) => scheduler.command(command, &is_prepared),
-                    Msg::PrepareDone { recipe_index, success } => {
-                        scheduler.prepare_finished(recipe_index, success)
-                    }
+                    Msg::PrepareDone {
+                        recipe_index,
+                        success,
+                    } => scheduler.prepare_finished(recipe_index, success),
                     Msg::CookDone => {
                         scheduler.cook_finished();
+                        Vec::new()
+                    }
+                    Msg::UpdateCheckDone { recipe_index } => {
+                        scheduler.update_check_finished(recipe_index);
                         Vec::new()
                     }
                 };
@@ -673,6 +782,9 @@ pub fn start(env: Env) -> io::Result<Worker> {
                             flags.cook_abort.store(false, Ordering::Relaxed);
                             let _ = cook_tx.send(CookTask::Install(request));
                         }
+                        Action::CheckUpdate(request) => {
+                            let _ = update_check_tx.send(request);
+                        }
                         Action::AbortCook => flags.cook_abort.store(true, Ordering::Relaxed),
                         Action::AbortPrepare => flags.prepare_abort.store(true, Ordering::Relaxed),
                         Action::Emit(event) => {
@@ -689,8 +801,9 @@ pub fn start(env: Env) -> io::Result<Worker> {
             drop(prepare_tx);
             drop(verify_tx);
             drop(cook_tx);
+            drop(update_check_tx);
 
-            for lane in [prepare_lane, verify_lane, cook_lane] {
+            for lane in [prepare_lane, verify_lane, cook_lane, update_check_lane] {
                 let _ = lane.join();
             }
 
@@ -705,6 +818,31 @@ pub fn start(env: Env) -> io::Result<Worker> {
     })
 }
 
+fn run_update_check(
+    env: &Env,
+    request: &CheckUpdateReq,
+    events: &Sender<WorkerEvent>,
+    msgs: &Sender<Msg>,
+) {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        crate::package::check_cached_version(
+            &env.work_dir(&request.recipe_name).join(".SRCINFO"),
+            &request.recipe_name,
+            &env.repository_name,
+        )
+    }))
+    .unwrap_or_else(|payload| Err(format!("internal error: {}", panic_message(&payload))));
+
+    let _ = events.send(WorkerEvent::UpdateChecked {
+        recipe_index: request.recipe_index,
+        result,
+    });
+
+    let _ = msgs.send(Msg::UpdateCheckDone {
+        recipe_index: request.recipe_index,
+    });
+}
+
 fn run_prepare(
     env: &Env,
     request: &PrepareReq,
@@ -712,7 +850,11 @@ fn run_prepare(
     msgs: &Sender<Msg>,
     flags: &Flags,
 ) {
-    let op = if request.reset { Op::Reset } else { Op::Prepare };
+    let op = if request.reset {
+        Op::Reset
+    } else {
+        Op::Prepare
+    };
 
     let _ = events.send(WorkerEvent::Started {
         recipe_index: request.recipe_index,
@@ -731,12 +873,18 @@ fn run_prepare(
         &title,
     );
 
-    let cancel = || flags.shutdown.load(Ordering::Relaxed) || flags.prepare_abort.load(Ordering::Relaxed);
+    let cancel =
+        || flags.shutdown.load(Ordering::Relaxed) || flags.prepare_abort.load(Ordering::Relaxed);
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         prepare::prepare_sources(env, &request.recipe_name, request.reset, &reporter, &cancel)
     }))
-    .unwrap_or_else(|payload| Err(JobError::Failed(format!("internal error: {}", panic_message(&payload)))));
+    .unwrap_or_else(|payload| {
+        Err(JobError::Failed(format!(
+            "internal error: {}",
+            panic_message(&payload)
+        )))
+    });
 
     reporter.finish(&result);
 
@@ -762,9 +910,10 @@ fn run_verify(env: &Env, request: &VerifyReq, events: &Sender<WorkerEvent>) {
 
             Ok(sources) => match crate::patch::verify(&work_dir, &sources, &request.patch_path) {
                 crate::patch::Verification::Applicable(..) => (PatchStatus::Clean, None),
-                crate::patch::Verification::Applied(..) => {
-                    (PatchStatus::Clean, Some("already applied to the sources".to_owned()))
-                }
+                crate::patch::Verification::Applied(..) => (
+                    PatchStatus::Clean,
+                    Some("already applied to the sources".to_owned()),
+                ),
                 crate::patch::Verification::Conflict(error) => (PatchStatus::Failed, Some(error)),
             },
         }
@@ -803,12 +952,18 @@ fn run_install(
         &format!("Installing {}", request.recipe_name),
     );
 
-    let cancel = || flags.shutdown.load(Ordering::Relaxed) || flags.cook_abort.load(Ordering::Relaxed);
+    let cancel =
+        || flags.shutdown.load(Ordering::Relaxed) || flags.cook_abort.load(Ordering::Relaxed);
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         crate::kitchen::install(&request.recipe_name, &reporter, &cancel)
     }))
-    .unwrap_or_else(|payload| Err(JobError::Failed(format!("internal error: {}", panic_message(&payload)))));
+    .unwrap_or_else(|payload| {
+        Err(JobError::Failed(format!(
+            "internal error: {}",
+            panic_message(&payload)
+        )))
+    });
 
     reporter.finish(&result);
 
@@ -839,7 +994,8 @@ fn run_cook(
         &format!("Cooking {}", request.recipe_name),
     );
 
-    let cancel = || flags.shutdown.load(Ordering::Relaxed) || flags.cook_abort.load(Ordering::Relaxed);
+    let cancel =
+        || flags.shutdown.load(Ordering::Relaxed) || flags.cook_abort.load(Ordering::Relaxed);
 
     // Outside the catch_unwind so a panic cannot lose a mounted overlay.
     let mut overlay = None;
@@ -847,7 +1003,12 @@ fn run_cook(
     let result = catch_unwind(AssertUnwindSafe(|| {
         crate::kitchen::cook(env, request, &reporter, &cancel, &mut overlay)
     }))
-    .unwrap_or_else(|payload| Err(JobError::Failed(format!("internal error: {}", panic_message(&payload)))));
+    .unwrap_or_else(|payload| {
+        Err(JobError::Failed(format!(
+            "internal error: {}",
+            panic_message(&payload)
+        )))
+    });
 
     reporter.finish(&result);
 
@@ -896,26 +1057,59 @@ mod tests {
         }
     }
 
+    fn check_update_req(index: usize) -> CheckUpdateReq {
+        CheckUpdateReq {
+            recipe_index: index,
+            recipe_name: format!("r{index}"),
+        }
+    }
+
     fn describe(actions: &[Action]) -> Vec<String> {
         actions
             .iter()
             .map(|action| match action {
                 Action::Prepare(request) => format!("prepare {}", request.recipe_index),
-                Action::Verify(request) => format!("verify {}/{}", request.recipe_index, request.patch_index),
+                Action::Verify(request) => {
+                    format!("verify {}/{}", request.recipe_index, request.patch_index)
+                }
                 Action::Cook(request) => format!("cook {}", request.recipe_index),
                 Action::Install(request) => format!("install {}", request.recipe_index),
+                Action::CheckUpdate(request) => {
+                    format!("check-update {}", request.recipe_index)
+                }
                 Action::AbortCook => "abort-cook".to_owned(),
                 Action::AbortPrepare => "abort-prepare".to_owned(),
-                Action::Emit(WorkerEvent::Prepared { recipe_index, result }) => {
+                Action::Emit(WorkerEvent::Prepared {
+                    recipe_index,
+                    result,
+                }) => {
                     format!("prepared {recipe_index} ok={}", result.is_ok())
                 }
-                Action::Emit(WorkerEvent::Cooked { recipe_index, result, .. }) => {
+                Action::Emit(WorkerEvent::Cooked {
+                    recipe_index,
+                    result,
+                    ..
+                }) => {
                     format!("cooked {recipe_index} ok={}", result.is_ok())
                 }
-                Action::Emit(WorkerEvent::Installed { recipe_index, result }) => {
+                Action::Emit(WorkerEvent::Installed {
+                    recipe_index,
+                    result,
+                }) => {
                     format!("installed {recipe_index} ok={}", result.is_ok())
                 }
-                Action::Emit(WorkerEvent::Verified { recipe_index, patch_index, status, .. }) => {
+                Action::Emit(WorkerEvent::UpdateChecked {
+                    recipe_index,
+                    result,
+                }) => {
+                    format!("update-checked {recipe_index} ok={}", result.is_ok())
+                }
+                Action::Emit(WorkerEvent::Verified {
+                    recipe_index,
+                    patch_index,
+                    status,
+                    ..
+                }) => {
                     format!("verified {recipe_index}/{patch_index} {status:?}")
                 }
                 Action::Emit(_) => "event".to_owned(),
@@ -927,13 +1121,69 @@ mod tests {
     const PREPARED: &dyn Fn(&str) -> bool = &|_| true;
 
     #[test]
+    fn update_checks_are_deduplicated_and_conflict_with_same_recipe_work() {
+        let mut scheduler = Scheduler::default();
+
+        assert_eq!(
+            describe(&scheduler.command(WorkerCommand::CheckUpdate(check_update_req(0)), PREPARED)),
+            ["check-update 0"]
+        );
+
+        assert_eq!(
+            describe(&scheduler.command(WorkerCommand::CheckUpdate(check_update_req(0)), PREPARED)),
+            ["update-checked 0 ok=false"]
+        );
+
+        assert_eq!(
+            describe(&scheduler.command(prepare_cmd(0), PREPARED)),
+            ["prepared 0 ok=false"]
+        );
+
+        assert_eq!(
+            describe(&scheduler.command(WorkerCommand::Cook(cook_req(0)), PREPARED)),
+            ["cooked 0 ok=false"]
+        );
+
+        scheduler.update_check_finished(0);
+
+        assert_eq!(
+            describe(&scheduler.command(prepare_cmd(0), PREPARED)),
+            ["prepare 0"]
+        );
+    }
+
+    #[test]
+    fn update_check_is_rejected_while_sources_are_preparing() {
+        let mut scheduler = Scheduler::default();
+
+        assert_eq!(
+            describe(&scheduler.command(prepare_cmd(0), NOT_PREPARED)),
+            ["prepare 0"]
+        );
+
+        assert_eq!(
+            describe(&scheduler.command(
+                WorkerCommand::CheckUpdate(check_update_req(0)),
+                NOT_PREPARED
+            )),
+            ["update-checked 0 ok=false"]
+        );
+    }
+
+    #[test]
     fn second_prepare_waits_and_then_runs() {
         let mut scheduler = Scheduler::default();
 
-        assert_eq!(describe(&scheduler.command(prepare_cmd(0), NOT_PREPARED)), ["prepare 0"]);
+        assert_eq!(
+            describe(&scheduler.command(prepare_cmd(0), NOT_PREPARED)),
+            ["prepare 0"]
+        );
         assert!(scheduler.command(prepare_cmd(1), NOT_PREPARED).is_empty());
 
-        assert_eq!(describe(&scheduler.prepare_finished(0, true)), ["prepare 1"]);
+        assert_eq!(
+            describe(&scheduler.prepare_finished(0, true)),
+            ["prepare 1"]
+        );
         assert!(scheduler.prepare_finished(1, true).is_empty());
     }
 
@@ -956,10 +1206,22 @@ mod tests {
         let mut scheduler = Scheduler::default();
 
         scheduler.command(prepare_cmd(0), NOT_PREPARED);
-        assert!(scheduler.command(WorkerCommand::Verify(verify_req(0, 0)), NOT_PREPARED).is_empty());
-        assert!(scheduler.command(WorkerCommand::Verify(verify_req(0, 1)), NOT_PREPARED).is_empty());
+        assert!(
+            scheduler
+                .command(WorkerCommand::Verify(verify_req(0, 0)), NOT_PREPARED)
+                .is_empty()
+        );
+        assert!(
+            scheduler
+                .command(WorkerCommand::Verify(verify_req(0, 1)), NOT_PREPARED)
+                .is_empty()
+        );
         // The same patch twice is only verified once.
-        assert!(scheduler.command(WorkerCommand::Verify(verify_req(0, 1)), NOT_PREPARED).is_empty());
+        assert!(
+            scheduler
+                .command(WorkerCommand::Verify(verify_req(0, 1)), NOT_PREPARED)
+                .is_empty()
+        );
 
         assert_eq!(
             describe(&scheduler.prepare_finished(0, true)),
@@ -981,7 +1243,10 @@ mod tests {
             ["prepare 3"]
         );
 
-        assert_eq!(describe(&scheduler.prepare_finished(3, true)), ["verify 3/1"]);
+        assert_eq!(
+            describe(&scheduler.prepare_finished(3, true)),
+            ["verify 3/1"]
+        );
     }
 
     #[test]
@@ -997,7 +1262,10 @@ mod tests {
             verify: vec![verify_req(0, 0), verify_req(0, 2)],
         };
 
-        assert_eq!(describe(&scheduler.command(command, PREPARED)), ["prepare 0"]);
+        assert_eq!(
+            describe(&scheduler.command(command, PREPARED)),
+            ["prepare 0"]
+        );
         assert_eq!(
             describe(&scheduler.prepare_finished(0, true)),
             ["verify 0/0", "verify 0/2"]
@@ -1008,7 +1276,10 @@ mod tests {
     fn only_one_cook_at_a_time_and_never_during_prepare() {
         let mut scheduler = Scheduler::default();
 
-        assert_eq!(describe(&scheduler.command(WorkerCommand::Cook(cook_req(0)), PREPARED)), ["cook 0"]);
+        assert_eq!(
+            describe(&scheduler.command(WorkerCommand::Cook(cook_req(0)), PREPARED)),
+            ["cook 0"]
+        );
         assert_eq!(
             describe(&scheduler.command(WorkerCommand::Cook(cook_req(1)), PREPARED)),
             ["cooked 1 ok=false"]
@@ -1020,7 +1291,10 @@ mod tests {
 
         scheduler.cook_finished();
 
-        assert_eq!(describe(&scheduler.command(prepare_cmd(1), PREPARED)), ["prepare 1"]);
+        assert_eq!(
+            describe(&scheduler.command(prepare_cmd(1), PREPARED)),
+            ["prepare 1"]
+        );
         assert_eq!(
             describe(&scheduler.command(WorkerCommand::Cook(cook_req(1)), PREPARED)),
             ["cooked 1 ok=false"]
@@ -1090,13 +1364,22 @@ mod tests {
         let mut saw_prepared = false;
 
         while let Ok(event) = events_rx.try_recv() {
-            if let WorkerEvent::Prepared { recipe_index: 7, .. } = event {
+            if let WorkerEvent::Prepared {
+                recipe_index: 7, ..
+            } = event
+            {
                 saw_prepared = true;
             }
         }
 
         assert!(saw_prepared);
-        assert!(matches!(msgs_rx.try_recv(), Ok(Msg::PrepareDone { recipe_index: 7, .. })));
+        assert!(matches!(
+            msgs_rx.try_recv(),
+            Ok(Msg::PrepareDone {
+                recipe_index: 7,
+                ..
+            })
+        ));
 
         let _ = fs::remove_dir_all(env.cache_dir);
     }

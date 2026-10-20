@@ -15,7 +15,11 @@ use crate::repository;
 use crate::worker::{CookReq, Env, JobError, Reporter};
 
 fn check_cancelled(cancel: &dyn Fn() -> bool) -> Result<(), JobError> {
-    if cancel() { Err(JobError::Cancelled) } else { Ok(()) }
+    if cancel() {
+        Err(JobError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn is_package(path: &Path) -> bool {
@@ -86,9 +90,9 @@ pub fn cook(
 
     rep.run(
         "repo-add",
-        Command::new("repo-add").arg(&database).args(
-            packages.iter().map(|package| repository_dir.join(package)),
-        ),
+        Command::new("repo-add")
+            .arg(&database)
+            .args(packages.iter().map(|package| repository_dir.join(package))),
         cancel,
     )?;
 
@@ -115,8 +119,9 @@ fn remove_stale_packages(work_dir: &Path, rep: &Reporter) -> Result<(), JobError
         if is_package(&path) {
             rep.note(&format!("removing stale package {}", path.display()));
 
-            fs::remove_file(&path)
-                .map_err(|error| format!("cannot remove stale package {}: {error}", path.display()))?;
+            fs::remove_file(&path).map_err(|error| {
+                format!("cannot remove stale package {}: {error}", path.display())
+            })?;
         }
     }
 
@@ -212,11 +217,16 @@ fn apply_patches(
                     rep.line(line);
                 }
 
-                return Err(JobError::Failed(format!("{name} does not apply to the sources")));
+                return Err(JobError::Failed(format!(
+                    "{name} does not apply to the sources"
+                )));
             }
         };
 
-        rep.note(&format!("patching {} with -p{strip_level}", source_dir.display()));
+        rep.note(&format!(
+            "patching {} with -p{strip_level}",
+            source_dir.display()
+        ));
 
         rep.run(
             "git apply",
@@ -254,11 +264,8 @@ fn publish_packages(
 
         let file_name = path.file_name().map(PathBuf::from).unwrap_or_default();
 
-        fs::set_permissions(
-            &path,
-            std::os::unix::fs::PermissionsExt::from_mode(0o644),
-        )
-        .map_err(|error| format!("cannot set permissions on {}: {error}", path.display()))?;
+        fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+            .map_err(|error| format!("cannot set permissions on {}: {error}", path.display()))?;
 
         let destination = repository_dir.join(&file_name);
 
@@ -270,15 +277,19 @@ fn publish_packages(
             )
         })?;
 
-        fs::remove_file(&path)
-            .map_err(|error| format!("cannot remove {} from the overlay: {error}", path.display()))?;
+        fs::remove_file(&path).map_err(|error| {
+            format!("cannot remove {} from the overlay: {error}", path.display())
+        })?;
 
         // A detached signature has to travel with its package.
         let signature = path.with_file_name(format!("{}.sig", file_name.to_string_lossy()));
 
         if signature.is_file() {
-            fs::copy(&signature, repository_dir.join(format!("{}.sig", file_name.to_string_lossy())))
-                .map_err(|error| format!("cannot copy {}: {error}", signature.display()))?;
+            fs::copy(
+                &signature,
+                repository_dir.join(format!("{}.sig", file_name.to_string_lossy())),
+            )
+            .map_err(|error| format!("cannot copy {}: {error}", signature.display()))?;
         }
 
         rep.note(&format!("published {}", file_name.display()));

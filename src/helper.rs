@@ -62,7 +62,10 @@ where
 }
 
 pub fn mount_overlay(lower: &Path, overlay_root: &Path) -> Result<(), String> {
-    run("mount-overlay", [lower.as_os_str(), overlay_root.as_os_str()])
+    run(
+        "mount-overlay",
+        [lower.as_os_str(), overlay_root.as_os_str()],
+    )
 }
 
 pub fn unmount_overlay(merged: &Path) -> Result<(), String> {
@@ -76,7 +79,10 @@ pub fn cleanup_overlay(overlay_root: &Path) -> Result<(), String> {
 
 pub fn setup_repository(repository: &str, uid: u32) -> Result<(), String> {
     let uid_str = uid.to_string();
-    run("setup-repository", [OsStr::new(repository), OsStr::new(&uid_str)])
+    run(
+        "setup-repository",
+        [OsStr::new(repository), OsStr::new(&uid_str)],
+    )
 }
 
 pub fn sync_packages(repository: &str) -> Result<(), String> {

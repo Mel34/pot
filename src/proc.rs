@@ -423,8 +423,8 @@ pub fn sanitize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn split(input: &[&[u8]]) -> Vec<Chunk> {
         let mut splitter = LineSplitter::default();
@@ -465,7 +465,10 @@ mod tests {
 
     #[test]
     fn crlf_is_a_single_line_break() {
-        assert_eq!(split(&[b"abc\r\ndef\r\n"]), vec![progress("abc"), line("abc"), progress("def"), line("def")]);
+        assert_eq!(
+            split(&[b"abc\r\ndef\r\n"]),
+            vec![progress("abc"), line("abc"), progress("def"), line("def")]
+        );
     }
 
     #[test]
@@ -511,7 +514,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("was not found in PATH"), "{error}");
+        assert!(
+            error.to_string().contains("was not found in PATH"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -519,7 +525,10 @@ mod tests {
         let mut lines = Vec::new();
 
         // `cat` would wait forever if stdin were the terminal.
-        let outcome = run(&mut Command::new("cat"), &|| false, &mut |chunk| lines.push(chunk)).unwrap();
+        let outcome = run(&mut Command::new("cat"), &|| false, &mut |chunk| {
+            lines.push(chunk)
+        })
+        .unwrap();
 
         assert!(outcome.success());
         assert!(lines.is_empty());
@@ -563,12 +572,17 @@ mod tests {
         .unwrap();
 
         assert!(outcome.success());
-        assert!(started.elapsed() < Duration::from_secs(4), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
     fn capture_returns_stdout_and_stderr() {
-        let captured = capture(Command::new("sh").args(["-c", "echo a; echo b >&2; exit 2"])).unwrap();
+        let captured =
+            capture(Command::new("sh").args(["-c", "echo a; echo b >&2; exit 2"])).unwrap();
 
         assert!(!captured.success);
         assert_eq!(captured.code, Some(2));

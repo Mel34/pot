@@ -121,13 +121,18 @@ mod tests {
     use std::fs;
 
     fn run(dir: &Path, args: &[&str]) {
-        let status = Command::new("git").args(args).current_dir(dir).status().unwrap();
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
         assert!(status.success(), "git {args:?} failed");
     }
 
     /// work/src/demo is a git checkout containing `hello.txt`.
     fn fixture(name: &str) -> (PathBuf, Vec<GitSource>) {
-        let root = std::env::temp_dir().join(format!("pot-patch-test-{}-{name}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pot-patch-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
 
         let source = root.join("src").join("demo");
@@ -151,9 +156,7 @@ mod tests {
 
         fs::write(
             &path,
-            format!(
-                "--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-{from}\n+{to}\n"
-            ),
+            format!("--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-{from}\n+{to}\n"),
         )
         .unwrap();
 
@@ -182,7 +185,10 @@ mod tests {
 
         fs::write(root.join("src/demo/hello.txt"), "goodbye\n").unwrap();
 
-        assert!(matches!(verify(&root, &sources, &patch), Verification::Applied(_, 1)));
+        assert!(matches!(
+            verify(&root, &sources, &patch),
+            Verification::Applied(_, 1)
+        ));
 
         fs::remove_dir_all(root).unwrap();
     }
