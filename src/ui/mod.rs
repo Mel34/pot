@@ -38,6 +38,27 @@ enum Modal {
     Notice(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateState {
+    Unknown,
+    Available,
+    Refreshing,
+    ReadyToCook,
+    CookFailed,
+    Current,
+    CachedNewer,
+    CheckFailed,
+}
+
+fn update_state_for(result: &Result<VersionStatus, String>) -> UpdateState {
+    match result {
+        Ok(VersionStatus::UpdateAvailable) => UpdateState::Available,
+        Ok(VersionStatus::Current) => UpdateState::Current,
+        Ok(VersionStatus::CachedNewer) => UpdateState::CachedNewer,
+        Err(_) => UpdateState::CheckFailed,
+    }
+}
+
 fn scan_artifact(repo_dir: &Path, recipe_name: &str) -> Option<String> {
     let entries = std::fs::read_dir(repo_dir).ok()?;
     let prefix = format!("{recipe_name}-");
@@ -73,6 +94,7 @@ pub fn run(
 
     let mut worker_status: Vec<Option<WorkerStatus>> = vec![None; recipes.len()];
     let mut cook_status: Vec<Option<String>> = vec![None; recipes.len()];
+    let mut update_states: Vec<UpdateState> = vec![UpdateState::Unknown; recipes.len()];
     let mut log_buffers: Vec<Vec<String>> = vec![Vec::new(); recipes.len()];
 
     let repository_dir = crate::repository::repository_dir(&env.repository_name).ok();
@@ -146,12 +168,19 @@ pub fn run(
                     result,
                 } => {
                     worker_status[recipe_index] = None;
+                    let was_refreshing = update_states[recipe_index] == UpdateState::Refreshing;
                     match result {
                         Ok(()) => {
                             cook_status[recipe_index] = Some("[ready to cook]".to_owned());
+                            if was_refreshing {
+                                update_states[recipe_index] = UpdateState::ReadyToCook;
+                            }
                         }
                         Err(error) => {
                             cook_status[recipe_index] = Some(format!("[prepare failed: {error}]"));
+                            if was_refreshing {
+                                update_states[recipe_index] = UpdateState::Available;
+                            }
                         }
                     }
                 }
@@ -178,6 +207,12 @@ pub fn run(
                     match result {
                         Ok(()) => {
                             cook_status[recipe_index] = Some("[cooked successfully]".to_owned());
+                            if matches!(
+                                update_states[recipe_index],
+                                UpdateState::ReadyToCook | UpdateState::CookFailed
+                            ) {
+                                update_states[recipe_index] = UpdateState::Current;
+                            }
                             if let Some(ref d) = repository_dir {
                                 if let Some(recipe) = recipes.get(recipe_index) {
                                     artifacts[recipe_index] = scan_artifact(d, &recipe.name);
@@ -188,6 +223,12 @@ pub fn run(
                             if message.contains("already being cooked") => {}
                         Err(error) => {
                             cook_status[recipe_index] = Some(format!("[cook failed: {error}]"));
+                            if matches!(
+                                update_states[recipe_index],
+                                UpdateState::ReadyToCook | UpdateState::CookFailed
+                            ) {
+                                update_states[recipe_index] = UpdateState::CookFailed;
+                            }
                         }
                     }
                 }
@@ -211,6 +252,7 @@ pub fn run(
                     recipe_index,
                     result,
                 } => {
+                    update_states[recipe_index] = update_state_for(&result);
                     cook_status[recipe_index] = Some(match result {
                         Ok(VersionStatus::UpdateAvailable) => "[update]".to_owned(),
                         Ok(VersionStatus::Current) => "[up to date]".to_owned(),
@@ -230,18 +272,24 @@ pub fn run(
         let enter_label = match active_pane {
             ActivePane::Left => {
                 if let Some(recipe) = recipes.get(recipe_cursor) {
-                    if artifacts
-                        .get(recipe_cursor)
-                        .and_then(|a| a.as_ref())
-                        .is_some()
-                        || cook_status[recipe_cursor].as_deref() == Some("[cooked successfully]")
-                        || cook_status[recipe_cursor].as_deref() == Some("[installed]")
-                    {
-                        "Install"
-                    } else if prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready {
-                        "Cook"
-                    } else {
-                        "Prepare"
+                    match update_states[recipe_cursor] {
+                        UpdateState::Available => "Refresh",
+                        UpdateState::Refreshing => "Wait",
+                        UpdateState::ReadyToCook | UpdateState::CookFailed => "Cook",
+                        _ if artifacts
+                            .get(recipe_cursor)
+                            .and_then(|a| a.as_ref())
+                            .is_some()
+                            || cook_status[recipe_cursor].as_deref()
+                                == Some("[cooked successfully]")
+                            || cook_status[recipe_cursor].as_deref() == Some("[installed]") =>
+                        {
+                            "Install"
+                        }
+                        _ if prepare::state(&env.cache_dir, &recipe.name) == PrepState::Ready => {
+                            "Cook"
+                        }
+                        _ => "Prepare",
                     }
                 } else {
                     "Enter"
@@ -386,7 +434,52 @@ pub fn run(
                                     let is_prepared = prepare::state(&env.cache_dir, &recipe.name)
                                         == PrepState::Ready;
 
-                                    if artifacts
+                                    if update_states[recipe_cursor] == UpdateState::Available {
+                                        artifacts[recipe_cursor] = None;
+                                        update_states[recipe_cursor] = UpdateState::Refreshing;
+
+                                        let verify = recipe
+                                            .patches
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(_, patch)| patch.selected)
+                                            .map(|(patch_index, patch)| VerifyReq {
+                                                recipe_index: recipe_cursor,
+                                                recipe_name: recipe.name.clone(),
+                                                patch_index,
+                                                patch_path: patch.path.clone(),
+                                            })
+                                            .collect();
+
+                                        worker
+                                            .send(WorkerCommand::Prepare {
+                                                request: PrepareReq {
+                                                    recipe_index: recipe_cursor,
+                                                    recipe_name: recipe.name.clone(),
+                                                    reset: true,
+                                                },
+                                                verify,
+                                            })
+                                            .map_err(|_| io::Error::other("worker send failed"))?;
+                                    } else if matches!(
+                                        update_states[recipe_cursor],
+                                        UpdateState::ReadyToCook | UpdateState::CookFailed
+                                    ) {
+                                        let patches = recipe
+                                            .patches
+                                            .iter()
+                                            .filter(|patch| patch.selected)
+                                            .map(|patch| patch.path.clone())
+                                            .collect();
+
+                                        worker
+                                            .send(WorkerCommand::Cook(CookReq {
+                                                recipe_index: recipe_cursor,
+                                                recipe_name: recipe.name.clone(),
+                                                patches,
+                                            }))
+                                            .map_err(|_| io::Error::other("worker send failed"))?;
+                                    } else if artifacts
                                         .get(recipe_cursor)
                                         .and_then(|a| a.as_ref())
                                         .is_some()
@@ -703,4 +796,30 @@ pub fn run(
 
     let _ = worker.send(WorkerCommand::Shutdown);
     Ok(())
+}
+
+#[cfg(test)]
+mod update_state_tests {
+    use super::*;
+
+    #[test]
+    fn maps_update_check_results_to_dedicated_states() {
+        assert_eq!(
+            update_state_for(&Ok(VersionStatus::UpdateAvailable)),
+            UpdateState::Available
+        );
+        assert_eq!(
+            update_state_for(&Ok(VersionStatus::Current)),
+            UpdateState::Current
+        );
+        assert_eq!(
+            update_state_for(&Ok(VersionStatus::CachedNewer)),
+            UpdateState::CachedNewer
+        );
+        assert_eq!(
+            update_state_for(&Err("test failure".to_owned())),
+            UpdateState::CheckFailed
+        );
+    }
+
 }
