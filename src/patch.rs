@@ -65,6 +65,103 @@ pub fn verify(work_dir: &Path, git_sources: &[GitSource], patch: &Path) -> Verif
 
 /// `Ok(None)` if `git apply --check` succeeds, `Ok(Some(why))` if it does
 /// not, `Err` if git could not be run at all.
+/// Verify selected patches in order against an isolated, disposable source tree.
+/// Each applicable patch is applied to that copy before the next patch is checked.
+pub fn verify_sequence(
+    work_dir: &Path,
+    git_sources: &[GitSource],
+    patches: &[PathBuf],
+) -> Vec<Verification> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+    if patches.is_empty() {
+        return Vec::new();
+    }
+
+    let temp_root = std::env::temp_dir().join(format!(
+        "pot-verify-{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let temp_src = temp_root.join("src");
+
+    let setup = (|| -> Result<(), String> {
+        std::fs::create_dir_all(&temp_src).map_err(|e| e.to_string())?;
+
+        for source in git_sources {
+            let original = work_dir.join("src").join(&source.name);
+            if !original.is_dir() {
+                continue;
+            }
+
+            let result = Command::new("cp")
+                .arg("-a")
+                .arg("--reflink=auto")
+                .arg(&original)
+                .arg(&temp_src)
+                .output()
+                .map_err(|e| format!("could not copy {}: {e}", original.display()))?;
+
+            if !result.status.success() {
+                return Err(format!(
+                    "could not copy {} for verification: {}",
+                    original.display(),
+                    String::from_utf8_lossy(&result.stderr).trim()
+                ));
+            }
+        }
+
+        Ok(())
+    })();
+
+    let outcomes = match setup {
+        Err(error) => patches
+            .iter()
+            .map(|_| Verification::Conflict(error.clone()))
+            .collect(),
+        Ok(()) => {
+            let mut outcomes = Vec::with_capacity(patches.len());
+
+            for patch in patches {
+                let outcome = match verify(&temp_root, git_sources, patch) {
+                    Verification::Applicable(source_dir, strip_level) => {
+                        let applied = Command::new("git")
+                            .arg("apply")
+                            .arg(format!("-p{strip_level}"))
+                            .arg(patch)
+                            .current_dir(&source_dir)
+                            .output();
+
+                        match applied {
+                            Ok(result) if result.status.success() => {
+                                Verification::Applicable(source_dir, strip_level)
+                            }
+                            Ok(result) => Verification::Conflict(format!(
+                                "could not apply patch to verification copy: {}",
+                                String::from_utf8_lossy(&result.stderr).trim()
+                            )),
+                            Err(error) => Verification::Conflict(format!(
+                                "could not run git apply: {error}"
+                            )),
+                        }
+                    }
+                    already_applied @ Verification::Applied(..) => already_applied,
+                    conflict @ Verification::Conflict(..) => conflict,
+                };
+
+                outcomes.push(outcome);
+            }
+
+            outcomes
+        }
+    };
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+    outcomes
+}
+
 fn git_apply_check(
     source_dir: &Path,
     patch: &Path,
@@ -161,6 +258,59 @@ mod tests {
         .unwrap();
 
         path
+    }
+
+    #[test]
+    fn selected_patches_are_verified_cumulatively_without_changing_sources() {
+        let (root, sources) = fixture("sequence");
+        let first = write_patch(&root, "hello", "goodbye");
+        let second = root.join("second.patch");
+
+        fs::write(
+            &second,
+            "--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-goodbye\n+welcome\n",
+        )
+        .unwrap();
+
+        let outcomes = verify_sequence(&root, &sources, &[first, second]);
+
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(outcomes[0], Verification::Applicable(..)));
+        assert!(matches!(outcomes[1], Verification::Applicable(..)));
+        assert_eq!(
+            fs::read_to_string(root.join("src/demo/hello.txt")).unwrap(),
+            "hello\n",
+            "verification must not modify the prepared source tree"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sequence_handles_first_patch_already_applied_to_sources() {
+        let (root, sources) = fixture("sequence-already-applied");
+        let first = write_patch(&root, "hello", "goodbye");
+        let second = root.join("second.patch");
+
+        fs::write(root.join("src/demo/hello.txt"), "goodbye\n").unwrap();
+        fs::write(
+            &second,
+            "--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-goodbye\n+welcome\n",
+        )
+        .unwrap();
+
+        let outcomes = verify_sequence(&root, &sources, &[first, second]);
+
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(outcomes[0], Verification::Applied(..)));
+        assert!(matches!(outcomes[1], Verification::Applicable(..)));
+        assert_eq!(
+            fs::read_to_string(root.join("src/demo/hello.txt")).unwrap(),
+            "goodbye\n",
+            "verification must not modify the prepared source tree"
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

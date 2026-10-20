@@ -83,6 +83,20 @@ fn scan_artifact(repo_dir: &Path, recipe_name: &str) -> Option<String> {
     matching.pop()
 }
 
+fn update_verified_patch(
+    recipe: &mut Recipe,
+    patch_index: usize,
+    status: PatchStatus,
+) {
+    if let Some(patch) = recipe.patches.get_mut(patch_index) {
+        patch.status = status;
+        if status == PatchStatus::Failed && patch.selected {
+            patch.selected = false;
+            let _ = recipe.save_selection();
+        }
+    }
+}
+
 pub fn run(
     mut recipes: Vec<Recipe>,
     env: crate::worker::Env,
@@ -200,9 +214,7 @@ pub fn run(
                     detail: _,
                 } => {
                     if let Some(recipe) = recipes.get_mut(recipe_index) {
-                        if let Some(patch) = recipe.patches.get_mut(patch_index) {
-                            patch.status = status;
-                        }
+                        update_verified_patch(recipe, patch_index, status);
                     }
                 }
 
@@ -847,6 +859,49 @@ mod update_state_tests {
             update_state_for(&Err("test failure".to_owned())),
             UpdateState::CheckFailed
         );
+    }
+
+    #[test]
+    fn failed_verification_unselects_and_persists_only_the_failed_patch() {
+        use crate::cookbook::Patch;
+
+        let root = std::env::temp_dir().join(format!(
+            "pot-ui-verification-selection-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut recipe = Recipe {
+            name: "selection-test".to_owned(),
+            path: root.clone(),
+            patches: vec![
+                Patch {
+                    path: root.join("bad.patch"),
+                    selected: true,
+                    status: PatchStatus::Checking,
+                },
+                Patch {
+                    path: root.join("good.patch"),
+                    selected: true,
+                    status: PatchStatus::Checking,
+                },
+            ],
+        };
+
+        update_verified_patch(&mut recipe, 0, PatchStatus::Failed);
+        update_verified_patch(&mut recipe, 1, PatchStatus::Clean);
+
+        assert_eq!(recipe.patches[0].status, PatchStatus::Failed);
+        assert!(!recipe.patches[0].selected);
+        assert_eq!(recipe.patches[1].status, PatchStatus::Clean);
+        assert!(recipe.patches[1].selected);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".pot")).unwrap(),
+            "good.patch\n"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
